@@ -85,7 +85,7 @@ labels, centers = slic_modif(
     p=2.0,
     num_superpixels=400,
     compactness=10,
-    max_iterations=40,
+    max_iterations=20,
     poisson_radius_factor=0.7  # Меньше = плотнее распределение
 )
 

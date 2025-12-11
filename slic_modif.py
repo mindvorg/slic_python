@@ -145,12 +145,15 @@ def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_ite
         centers[valid_centers] = new_centers[valid_centers]
 
     # ПОСТ-ОБРАБОТКА: заполняем оставшиеся пустоты
-    labels = fill_unassigned_pixels(labels, centers)
+    # labels = fill_unassigned_pixels(labels, centers)
+    #labels = enforce_connectivity(labels, min_size=20)
 
-    plt.figure(figsize=(15, 3), dpi=100)
-    #plt.imshow(labels, cmap='tab20', interpolation='nearest')
-    plt.imshow(labels, cmap='tab20')
+    # Отображаем результаты
+    plt.figure(dpi=100)
+    plt.imshow(labels, cmap='gist_ncar', interpolation='nearest')
+    plt.gca().invert_yaxis()
     plt.title('Labels Map')
+    plt.axis('off')
     plt.colorbar(shrink=0.7)
     plt.show()
 
@@ -269,3 +272,67 @@ def draw_gradient_vectors_quiver(image, labels, centers, u, v, scale=2.0):
     ax.axis('off')
 
     return fig
+
+
+def enforce_connectivity(labels, min_size=20):
+    """
+    Обеспечивает связность суперпикселей через анализ связных компонент
+
+    Parameters:
+    labels - метки суперпикселей
+    min_size - минимальный размер компоненты для сохранения
+
+    Returns:
+    labels - исправленные метки с связными областями
+    """
+    from scipy import ndimage
+
+    height, width = labels.shape
+    new_labels = -1 * np.ones_like(labels)
+    label_counter = 0
+
+    # Проходим по всем уникальным меткам
+    unique_labels = np.unique(labels)
+
+    for label in unique_labels:
+        mask = labels == label
+
+        # Находим связные компоненты для этой метки
+        num_components, components = cv2.connectedComponents(
+            mask.astype(np.uint8), connectivity=4
+        )
+
+        # plt.figure()
+        # plt.imshow(components, cmap='rainbow')
+        # plt.gca().invert_yaxis();
+        # plt.axis('off')
+        # plt.show()
+
+        # Для каждой связной компоненты
+        for comp_id in range(1, num_components):
+            component_mask = components == comp_id
+            component_size = np.sum(component_mask)
+
+            if component_size < min_size:
+                # Маленькие компоненты присоединяем к соседям
+                # Находим соседние метки
+                dilated = cv2.dilate(component_mask.astype(np.uint8),
+                                     kernel=np.ones((3, 3), np.uint8))
+                neighbors = dilated & ~component_mask
+                neighbor_labels = labels[neighbors]
+                if len(neighbor_labels) > 0:
+                    # Присваиваем наиболее частую метку соседа
+                    unique, counts = np.unique(neighbor_labels, return_counts=True)
+                    new_label = unique[np.argmax(counts)]
+                    new_labels[component_mask] = new_label
+                else:
+                    # Если нет соседей, сохраняем как новую метку
+                    new_labels[component_mask] = label_counter
+                    label_counter += 1
+            else:
+                # Большие компоненты сохраняем как отдельные суперпиксели
+                new_labels[component_mask] = label_counter
+                label_counter += 1
+
+    return new_labels
+
