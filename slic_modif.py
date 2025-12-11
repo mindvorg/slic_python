@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 from scipy.stats import qmc
 import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull
+from matplotlib.colors import ListedColormap
 
 
 def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_iterations=10, random_init=True,
@@ -148,14 +150,10 @@ def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_ite
     # labels = fill_unassigned_pixels(labels, centers)
     #labels = enforce_connectivity(labels, min_size=20)
 
-    # Отображаем результаты
-    plt.figure(dpi=100)
-    plt.imshow(labels, cmap='gist_ncar', interpolation='nearest')
-    plt.gca().invert_yaxis()
-    plt.title('Labels Map')
-    plt.axis('off')
-    plt.colorbar(shrink=0.7)
-    plt.show()
+    convex_hulls = build_convex_hulls(labels, centers)
+    visualize_convex_hulls(labels, centers, convex_hulls,
+                           show_points=True, show_centers=False,
+                           alpha=0.3, figsize=(10, 10))
 
     return labels, centers
 
@@ -262,7 +260,7 @@ def draw_gradient_vectors_quiver(image, labels, centers, u, v, scale=2.0):
 
     # Рисуем векторы градиента
     ax.quiver(x_coords, y_coords, u_vectors, v_vectors,
-              color='red', scale=15, width=0.003, headwidth=4,
+              color='blue', scale=15, width=0.003, headwidth=4,
               headlength=5, headaxislength=4.5)
 
     # Отмечаем центроиды точками
@@ -336,3 +334,165 @@ def enforce_connectivity(labels, min_size=20):
 
     return new_labels
 
+
+def build_convex_hulls(labels, centers):
+    """
+    Построить выпуклые оболочки для каждого кластера.
+
+    Parameters:
+    -----------
+    labels : ndarray, shape (H, W) или (N,)
+        Массив меток кластеров
+    centers : ndarray, shape (n_clusters, 2)
+        Центры кластеров: centers[i, 0] = x, centers[i, 1] = y
+
+    Returns:
+    --------
+    convex_hulls : dict
+        Словарь, где ключ - номер кластера,
+        значение - вершины выпуклой оболочки (ndarray shape (m, 2))
+    """
+    n_clusters = len(centers)
+
+    # Если labels 2D (изображение), преобразуем в плоский вид
+    if labels.ndim == 2:
+        h, w = labels.shape
+        y_coords, x_coords = np.mgrid[:h, :w]
+        points = np.column_stack([x_coords.ravel(), y_coords.ravel()])
+        flat_labels = labels.ravel()
+    else:
+        # Для 1D массива предполагаем, что координаты - это индексы
+        n_points = len(labels)
+        y_coords, x_coords = np.divmod(np.arange(n_points), labels.shape[1] if labels.ndim > 1 else n_points)
+        points = np.column_stack([x_coords, y_coords])
+        flat_labels = labels
+
+    convex_hulls = {}
+
+    # Для каждого кластера строим выпуклую оболочку
+    for cluster_id in range(n_clusters):
+        # Получаем точки текущего кластера
+        mask = flat_labels == cluster_id
+        cluster_points = points[mask]
+
+        # Если точек достаточно для построения выпуклой оболочки
+        if len(cluster_points) >= 3:
+            try:
+                hull = ConvexHull(cluster_points)
+                # Сохраняем вершины выпуклой оболочки
+                convex_hulls[cluster_id] = cluster_points[hull.vertices]
+            except:
+                # Если не удалось построить выпуклую оболочку, используем bounding box
+                convex_hulls[cluster_id] = cluster_points
+        elif len(cluster_points) > 0:
+            # Для 1-2 точек сохраняем их как есть
+            convex_hulls[cluster_id] = cluster_points
+
+    return convex_hulls
+
+
+def visualize_convex_hulls(labels, centers, convex_hulls=None,
+                           show_points=True, show_centers=True,
+                           alpha=0.3, figsize=(10, 10)):
+    """
+    Визуализация выпуклых оболочек кластеров.
+
+    Parameters:
+    -----------
+    labels : ndarray
+        Массив меток кластеров
+    centers : ndarray
+        Центры кластеров
+    convex_hulls : dict, optional
+        Предварительно вычисленные выпуклые оболочки
+    show_points : bool
+        Показывать ли точки кластеров
+    show_centers : bool
+        Показывать ли центры кластеров
+    alpha : float
+        Прозрачность заполнения выпуклых оболочек
+    figsize : tuple
+        Размер фигуры
+    """
+    if convex_hulls is None:
+        convex_hulls = build_convex_hulls(labels, centers)
+
+    matlab_lines_colors = [
+            (0, 0.4470, 0.7410),  # Blue
+            (0.8500, 0.3250, 0.0980),  # Orange
+            (0.9290, 0.6940, 0.1250),  # Yellow
+            (0.4940, 0.1840, 0.5560),  # Purple
+            (0.4660, 0.6740, 0.1880),  # Green
+            (0.3010, 0.7450, 0.9330),  # Light Blue
+            (0.6350, 0.0780, 0.1840),  # Red
+        ]
+
+    colors = [matlab_lines_colors[i % 7] for i in range(len(convex_hulls))]
+
+    # Создаем фигуру
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    ax0 = axes[0]
+    # Отображаем результаты
+    matlab_lines_cmap = ListedColormap(colors)
+    ax0.imshow(labels, cmap=matlab_lines_cmap, interpolation='nearest')
+    ax0.invert_yaxis()
+
+    ax = axes[1]
+
+    # Если нужно показать точки
+    if show_points and labels.ndim == 2:
+        h, w = labels.shape
+        y_coords, x_coords = np.mgrid[:h, :w]
+        flat_labels = labels.ravel()
+
+        # Показываем все точки с цветами по кластерам
+        scatter = ax.scatter(x_coords.ravel(), y_coords.ravel(),
+                             c=flat_labels, cmap=matlab_lines_cmap, s=1, alpha=0.5)
+
+    # Рисуем выпуклые оболочки
+    for cluster_id, hull_points in convex_hulls.items():
+        if len(hull_points) > 0:
+            # Создаем полигон
+            from matplotlib.patches import Polygon
+
+            # Если точки образуют замкнутый контур
+            if len(hull_points) >= 3:
+                # Замыкаем полигон
+                closed_points = np.vstack([hull_points, hull_points[0]])
+
+                # Создаем и добавляем полигон
+                polygon = Polygon(closed_points,
+                                  closed=True,
+                                  edgecolor=colors[cluster_id % len(colors)],
+                                  facecolor=colors[cluster_id % len(colors)],
+                                  alpha=alpha,
+                                  linewidth=2)
+                ax.add_patch(polygon)
+
+            # Рисуем границы
+            ax.plot(hull_points[:, 0], hull_points[:, 1],
+                    color=colors[cluster_id % len(colors)],
+                    linewidth=2, alpha=0.8)
+
+    # Если нужно показать центры
+    if show_centers:
+        ax.scatter(centers[:, 0], centers[:, 1],
+                   c='red', s=100, marker='X',
+                   edgecolor='black', linewidth=2,
+                   label='Centers')
+        ax.legend()
+
+    # Настройка осей
+    if labels.ndim == 2:
+        ax.set_xlim(0, labels.shape[1])
+        ax.set_ylim(labels.shape[0], 0)  # Инвертируем ось Y для изображений
+    else:
+        # Автоматическое масштабирование
+        ax.set_aspect('equal')
+
+    ax.set_xlabel('X coordinate')
+    ax.set_ylabel('Y coordinate')
+    ax.set_title(f'Convex Hulls of {len(convex_hulls)} Clusters')
+    ax.invert_yaxis()
+    plt.tight_layout()
+    return fig, ax

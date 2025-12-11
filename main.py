@@ -11,7 +11,8 @@ from sklearn.cluster import KMeans
 import numpy as np
 from slic_modif import slic_modif, draw_gradient_vectors, draw_superpixel_boundaries, draw_gradient_vectors_quiver
 
-filename = '4.jpg'
+#filename = '4.jpg'
+filename = 'Lenna256.jpg'
 
 img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
 imgcol = plt.imread(filename)
@@ -82,11 +83,11 @@ magnitude, angle = cv2.cartToPolar(a, b)
 # Применяем модифицированный SLIC с распределением Пуассона от SciPy
 labels, centers = slic_modif(
     imgcol, u, v,
-    p=2.0,
-    num_superpixels=400,
-    compactness=10,
-    max_iterations=20,
-    poisson_radius_factor=0.7  # Меньше = плотнее распределение
+    p=3.0,
+    num_superpixels=1400,
+    compactness=30,
+    max_iterations=50,
+    poisson_radius_factor=1  # Меньше = плотнее распределение
 )
 
 
