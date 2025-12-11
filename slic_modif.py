@@ -147,6 +147,13 @@ def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_ite
     # ПОСТ-ОБРАБОТКА: заполняем оставшиеся пустоты
     labels = fill_unassigned_pixels(labels, centers)
 
+    plt.figure(figsize=(15, 3), dpi=100)
+    #plt.imshow(labels, cmap='tab20', interpolation='nearest')
+    plt.imshow(labels, cmap='tab20')
+    plt.title('Labels Map')
+    plt.colorbar(shrink=0.7)
+    plt.show()
+
     return labels, centers
 
 
