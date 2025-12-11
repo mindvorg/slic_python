@@ -258,7 +258,7 @@ def draw_gradient_vectors_quiver(image, labels, centers, u, v, scale=2.0):
     # Отображаем исходное изображение
     ax.imshow(image)
 
-    # Рисуем векторы градиента
+    # Рисуем изовекторы
     ax.quiver(x_coords, y_coords, u_vectors, v_vectors,
               color='blue', scale=15, width=0.003, headwidth=4,
               headlength=5, headaxislength=4.5)
@@ -266,7 +266,7 @@ def draw_gradient_vectors_quiver(image, labels, centers, u, v, scale=2.0):
     # Отмечаем центроиды точками
     ax.scatter(x_coords, y_coords, c='yellow', s=20, marker='o', alpha=0.7)
 
-    ax.set_title('Векторы градиента в центроидах суперпикселей')
+    ax.set_title('Изовекторы в центроидах суперпикселей')
     ax.axis('off')
 
     return fig

@@ -12,21 +12,33 @@ import numpy as np
 from slic_modif import slic_modif, draw_gradient_vectors, draw_superpixel_boundaries, draw_gradient_vectors_quiver
 
 #filename = '4.jpg'
-filename = 'Lenna256.jpg'
+filename = 'Lenna512.png'
 
 img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
 imgcol = plt.imread(filename)
 
 # differentiation kernels
-kernely = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
-kernelx = -np.array([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
+# kernely = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
+# kernelx = -np.array([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
+
+kernely = np.array([
+    [0.004, 0.031, 0.109, 0.031, 0.004],
+    [0.021, 0.165, 0.576, 0.165, 0.021],
+    [0, 0, 0, 0, 0],
+    [-0.021, -0.165, -0.576, -0.165, -0.021],
+    [-0.004, -0.031, -0.109, -0.031, -0.004]
+])
+
+# Y-направление (вертикальный градиент)
+kernelx = -kernely.T
+
 
 # apply differentiation
 u = cv2.filter2D(img, cv2.CV_8U, kernelx).astype(float)
 v = cv2.filter2D(img, cv2.CV_8U, kernely).astype(float)
 
 # filter via averaging
-nsize = 24
+nsize = 30
 s = 6
 ax = np.linspace(-(nsize - 1) / 2., (nsize - 1) / 2., nsize)
 gauss = np.exp(-0.5 * np.square(ax) / np.square(s))
@@ -82,12 +94,12 @@ magnitude, angle = cv2.cartToPolar(a, b)
 
 # Применяем модифицированный SLIC с распределением Пуассона от SciPy
 labels, centers = slic_modif(
-    imgcol, u, v,
-    p=3.0,
-    num_superpixels=1400,
+    imgcol, a, b,
+    p=3,
+    num_superpixels=2100,
     compactness=30,
-    max_iterations=50,
-    poisson_radius_factor=1  # Меньше = плотнее распределение
+    max_iterations=20,
+    poisson_radius_factor=0.8  # Меньше = плотнее распределение
 )
 
 
@@ -95,9 +107,9 @@ labels, centers = slic_modif(
 print(f"Финальное количество центров: {len(centers)}")
 # Создаем визуализации
 img_with_boundaries = draw_superpixel_boundaries(imgcol, labels)
-img_with_vectors = draw_gradient_vectors(imgcol, labels, centers, u, v)
+img_with_vectors = draw_gradient_vectors(imgcol, labels, centers, a, b)
 
-fig_quiver = draw_gradient_vectors_quiver(imgcol, labels, centers, u, v, scale=0.5)
+fig_quiver = draw_gradient_vectors_quiver(imgcol, labels, centers, a, b, scale=0.5)
 plt.gca().invert_yaxis()
 plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
