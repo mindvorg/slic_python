@@ -296,94 +296,94 @@ def plot_superpixel(original_points: List[Tuple[float, float]],
     print(f"Создана визуализация для суперпикселя {sp_id}")
 
 
-def plot_all_superpixels_from_json(json_file: str, output_image: str = "all_superpixels.png"):
-    """Отрисовывает все суперпиксели из JSON файла на одном изображении."""
+# def plot_all_superpixels_from_json(json_file: str, output_image: str = "all_superpixels.png"):
+#     """Отрисовывает все суперпиксели из JSON файла на одном изображении."""
+#
+#     # Читаем JSON файл
+#     with open(json_file, 'r', encoding='utf-8') as f:
+#         data = json.load(f)
+#
+#     fig, ax = plt.subplots(figsize=(12, 10))
+#
+#     # Обрабатываем каждый суперпиксель
+#     for superpixel in data['processed_superpixels']:
+#         sp_id = superpixel['id']
+#         center = superpixel['center']
+#         vertices = superpixel['vertices']
+#
+#         # Извлекаем координаты вершин
+#         vert_x = [v['x'] for v in vertices]
+#         vert_y = [v['y'] for v in vertices]
+#
+#         # Замыкаем полигон
+#         if vertices[0] != vertices[-1]:
+#             vert_x.append(vertices[0]['x'])
+#             vert_y.append(vertices[0]['y'])
+#
+#         # Рисуем полигон
+#         ax.plot(vert_x, vert_y, 'b-', linewidth=1, alpha=0.7)
+#         ax.fill(vert_x, vert_y, alpha=0.2)
+#
+#         # Рисуем вершины
+#         ax.scatter(vert_x, vert_y, c='red', s=20, alpha=0.8)
+#
+#         # Добавляем ID в центре
+#         ax.text(center['x'], center['y'], str(sp_id),
+#                 fontsize=8, ha='center', va='center')
+#
+#     ax.set_title(f'Все суперпиксели ({len(data["processed_superpixels"])} шт.)')
+#     ax.set_aspect('equal')
+#     ax.grid(True, alpha=0.3)
+#
+#     plt.tight_layout()
+#     plt.savefig(output_image, dpi=150, bbox_inches='tight')
+#     plt.show()
+#
+#     print(f"Визуализация всех суперпикселей сохранена в {output_image}")
 
-    # Читаем JSON файл
-    with open(json_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
 
-    fig, ax = plt.subplots(figsize=(12, 10))
-
-    # Обрабатываем каждый суперпиксель
-    for superpixel in data['processed_superpixels']:
-        sp_id = superpixel['id']
-        center = superpixel['center']
-        vertices = superpixel['vertices']
-
-        # Извлекаем координаты вершин
-        vert_x = [v['x'] for v in vertices]
-        vert_y = [v['y'] for v in vertices]
-
-        # Замыкаем полигон
-        if vertices[0] != vertices[-1]:
-            vert_x.append(vertices[0]['x'])
-            vert_y.append(vertices[0]['y'])
-
-        # Рисуем полигон
-        ax.plot(vert_x, vert_y, 'b-', linewidth=1, alpha=0.7)
-        ax.fill(vert_x, vert_y, alpha=0.2)
-
-        # Рисуем вершины
-        ax.scatter(vert_x, vert_y, c='red', s=20, alpha=0.8)
-
-        # Добавляем ID в центре
-        ax.text(center['x'], center['y'], str(sp_id),
-                fontsize=8, ha='center', va='center')
-
-    ax.set_title(f'Все суперпиксели ({len(data["processed_superpixels"])} шт.)')
-    ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_image, dpi=150, bbox_inches='tight')
-    plt.show()
-
-    print(f"Визуализация всех суперпикселей сохранена в {output_image}")
-
-
-def plot_all_superpixels_original_from_json(json_file: str, output_image: str = "all_original_superpixels.png"):
-    """Отрисовывает все исходные суперпиксели из JSON файла на одном изображении."""
-
-    # Читаем JSON файл
-    with open(json_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    fig, ax = plt.subplots(figsize=(12, 10))
-
-    # Обрабатываем каждый суперпиксель
-    for superpixel in data['superpixels']:
-        sp_id = superpixel['id']
-        center = superpixel['center']
-        boundary_points = superpixel['boundary_points']
-
-        # Извлекаем координаты граничных точек
-        bp_x = [p['x'] for p in boundary_points]
-        bp_y = [p['y'] for p in boundary_points]
-
-        # Замыкаем полигон
-        if boundary_points[0] != boundary_points[-1]:
-            bp_x.append(boundary_points[0]['x'])
-            bp_y.append(boundary_points[0]['y'])
-
-        # Рисуем полигон
-        ax.plot(bp_x, bp_y, 'b-', linewidth=0.5, alpha=0.5)
-        ax.fill(bp_x, bp_y, alpha=0.1)
-
-        # Добавляем ID в центре
-        ax.text(center['x'], center['y'], str(sp_id),
-                fontsize=6, ha='center', va='center',
-                bbox=dict(boxstyle="circle,pad=0.1", facecolor='white', alpha=0.7))
-
-    ax.set_title(f'Все исходные суперпиксели ({len(data["superpixels"])} шт.)')
-    ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(output_image, dpi=150, bbox_inches='tight')
-    plt.show()
-
-    print(f"Визуализация всех исходных суперпикселей сохранена в {output_image}")
+# def plot_all_superpixels_original_from_json(json_file: str, output_image: str = "all_original_superpixels.png"):
+#     """Отрисовывает все исходные суперпиксели из JSON файла на одном изображении."""
+#
+#     # Читаем JSON файл
+#     with open(json_file, 'r', encoding='utf-8') as f:
+#         data = json.load(f)
+#
+#     fig, ax = plt.subplots(figsize=(12, 10))
+#
+#     # Обрабатываем каждый суперпиксель
+#     for superpixel in data['superpixels']:
+#         sp_id = superpixel['id']
+#         center = superpixel['center']
+#         boundary_points = superpixel['boundary_points']
+#
+#         # Извлекаем координаты граничных точек
+#         bp_x = [p['x'] for p in boundary_points]
+#         bp_y = [p['y'] for p in boundary_points]
+#
+#         # Замыкаем полигон
+#         if boundary_points[0] != boundary_points[-1]:
+#             bp_x.append(boundary_points[0]['x'])
+#             bp_y.append(boundary_points[0]['y'])
+#
+#         # Рисуем полигон
+#         ax.plot(bp_x, bp_y, 'b-', linewidth=0.5, alpha=0.5)
+#         ax.fill(bp_x, bp_y, alpha=0.1)
+#
+#         # Добавляем ID в центре
+#         ax.text(center['x'], center['y'], str(sp_id),
+#                 fontsize=6, ha='center', va='center',
+#                 bbox=dict(boxstyle="circle,pad=0.1", facecolor='white', alpha=0.7))
+#
+#     ax.set_title(f'Все исходные суперпиксели ({len(data["superpixels"])} шт.)')
+#     ax.set_aspect('equal')
+#     ax.grid(True, alpha=0.3)
+#
+#     plt.tight_layout()
+#     plt.savefig(output_image, dpi=150, bbox_inches='tight')
+#     plt.show()
+#
+#     print(f"Визуализация всех исходных суперпикселей сохранена в {output_image}")
 def main():
     """Основная функция для запуска скрипта."""
 
@@ -405,6 +405,6 @@ def main():
     except Exception as e:
         print(f"Ошибка при обработке файла: {e}")
 
-plot_all_superpixels_from_json('processed_superpixels.json')
-# if __name__ == "__main__":
-#     main()
+# plot_all_superpixels_from_json('processed_superpixels.json')
+if __name__ == "__main__":
+    main()

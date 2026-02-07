@@ -13,7 +13,7 @@ class BoundaryVectorizer:
         """
         if not os.path.exists(json_file):
             raise FileNotFoundError(
-                f"Файл {json_file} не найден. Сначала запустите main.py для создания суперпикселей.")
+                f"Файл {json_file} не найден. Сначала запустите segmentation.py для создания суперпикселей.")
 
         with open(json_file, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
@@ -563,7 +563,7 @@ def main():
         available_files = find_superpixel_files()
         if not available_files:
             print("Не найдены файлы с суперпикселями.")
-            print("Сначала запустите main.py для создания суперпикселей.")
+            print("Сначала запустите segmentation.py для создания суперпикселей.")
             return
 
         print("Доступные файлы с суперпикселями:")
