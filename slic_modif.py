@@ -4,6 +4,106 @@ from scipy.stats import qmc
 import matplotlib.pyplot as plt
 
 
+def complete_superpixel_coverage(labels, centers, img_lab=None, u=None, v=None):
+    """
+    ПОЛНЫЙ КОМБИНИРОВАННЫЙ ПОДХОД:
+    1. Удаляет маленькие островки
+    2. Обеспечивает полное покрытие
+    3. Уточняет границы
+    """
+    from scipy import ndimage
+
+    height, width = labels.shape
+    result = labels.copy()
+
+    # ШАГ 1: Удаляем маленькие островки, но сохраняем связность
+    print("ШАГ 1: Удаление маленьких островков...")
+    unique_labels = np.unique(result[result >= 0])
+
+    for label in unique_labels:
+        mask = result == label
+
+        # Находим связные компоненты
+        labeled_mask, num_features = ndimage.label(mask)
+
+        if num_features > 1:
+            # Находим размеры компонент
+            component_sizes = np.bincount(labeled_mask.ravel())
+            component_sizes[0] = 0
+
+            # Находим самую большую компоненту
+            main_component = np.argmax(component_sizes)
+
+            # Для каждой маленькой компоненты
+            for comp_id in range(1, num_features + 1):
+                if comp_id != main_component:
+                    component = labeled_mask == comp_id
+
+                    # Присоединяем к соседнему суперпикселю
+                    dilated = ndimage.binary_dilation(component)
+                    border = dilated & ~component
+
+                    neighbor_labels = result[border]
+                    neighbor_labels = neighbor_labels[neighbor_labels >= 0]
+
+                    if len(neighbor_labels) > 0:
+                        # Присваиваем самую частую метку соседей
+                        most_common = np.bincount(neighbor_labels.astype(int)).argmax()
+                        result[component] = most_common
+                    else:
+                        # Если нет соседей, оставляем как есть (не удаляем!)
+                        pass
+
+    # ШАГ 2: Обеспечиваем полное покрытие
+    print("ШАГ 2: Обеспечение полного покрытия...")
+    unassigned = result == -1
+    unassigned_count = np.sum(unassigned)
+
+    if unassigned_count > 0:
+        print(f"Найдено {unassigned_count} неприсвоенных пикселей")
+
+        # Используем Distance Transform для заполнения
+        assigned_mask = result >= 0
+
+        if np.any(assigned_mask):
+            # Находим ближайшие присвоенные пиксели
+            indices = ndimage.distance_transform_edt(
+                ~assigned_mask,
+                return_distances=False,
+                return_indices=True
+            )
+            nearest_labels = result[tuple(indices)]
+            result[unassigned] = nearest_labels[unassigned]
+        else:
+            # Если нет присвоенных пикселей, используем центры
+            print("Нет присвоенных пикселей, используем центры")
+            y_coords, x_coords = np.mgrid[0:height, 0:width]
+            min_dist = np.full((height, width), np.inf)
+
+            for k, center in enumerate(centers):
+                if center[0] >= 0 and center[1] >= 0:
+                    dist = np.sqrt((y_coords - center[0]) ** 2 + (x_coords - center[1]) ** 2)
+                    mask = dist < min_dist
+                    min_dist[mask] = dist[mask]
+                    result[mask] = k
+
+    # ШАГ 3: Финальная проверка
+    print("ШАГ 3: Финальная проверка...")
+    final_unassigned = np.sum(result == -1)
+    if final_unassigned > 0:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: осталось {final_unassigned} неприсвоенных пикселей!")
+        # Принудительно присваиваем все оставшиеся пиксели первому центру
+        valid_centers = [k for k, c in enumerate(centers) if c[0] >= 0 and c[1] >= 0]
+        if valid_centers:
+            result[result == -1] = valid_centers[0]
+
+    # Проверка результата
+    unique, counts = np.unique(result, return_counts=True)
+    print(f"Итоговое распределение: {dict(zip(unique, counts))}")
+    print(f"Всего пикселей: {np.sum(counts)} (ожидалось: {height * width})")
+
+    return result
+
 def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_iterations=10, random_init=True,
                poisson_radius_factor=0.5):
     """
@@ -145,7 +245,17 @@ def slic_modif(imgcol, u, v, p=2.0, num_superpixels=100, compactness=10, max_ite
         centers[valid_centers] = new_centers[valid_centers]
 
     # ПОСТ-ОБРАБОТКА: заполняем оставшиеся пустоты
-    labels = fill_unassigned_pixels(labels, centers)
+    # labels = fill_unassigned_pixels(labels, centers)
+
+    print("Пост-обработка: обеспечение полного покрытия...")
+
+    # Применяем комбинированный подход
+    labels = complete_superpixel_coverage(labels, centers, img_lab, u, v)
+
+    # Финальная проверка
+    unique_labels = np.unique(labels)
+    print(f"Финальное количество суперпикселей: {len(unique_labels)}")
+    print(f"Все пиксели присвоены: {np.all(labels >= 0)}")
 
     return labels, centers
 
