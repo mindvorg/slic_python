@@ -394,52 +394,76 @@ def calculate_angle_to_center(edge_points, center):
     return abs(angle - 90)
 
 
-def find_best_edges(polygon_data):
-    """Нахождение двух лучших рёбер с углами, ближайшими к 90 градусам"""
-    vertices = [(v['x'], v['y']) for v in polygon_data['vertices']]
-    center = (polygon_data['center']['x'], polygon_data['center']['y'])
-    n = len(vertices)
+def find_most_parallel_edges(vertices):
+    """
+    Находит индексы двух наиболее параллельных рёбер многоугольника.
 
+    Parameters:
+        vertices (list of tuple): список вершин в формате [(x1,y1), (x2,y2), ...]
+
+    Returns:
+        tuple (idx1, idx2) – индексы начала рёбер (вершина i соединяется с i+1).
+    """
+    n = len(vertices)
     edges = []
     for i in range(n):
-        v1_idx = i
-        v2_idx = (i + 1) % n
-        edge_points = (vertices[v1_idx], vertices[v2_idx])
-        deviation = calculate_angle_to_center(edge_points, center)
-        edge_length = math.dist(edge_points[0], edge_points[1])
+        p1 = np.array(vertices[i])
+        p2 = np.array(vertices[(i + 1) % n])
+        vec = p2 - p1
+        length = np.linalg.norm(vec)
+        edges.append((vec, length, i))
 
-        edges.append({
-            'indices': (v1_idx, v2_idx),
-            'points': edge_points,
-            'deviation': deviation,
-            'length': edge_length
+    best_pair = None
+    best_cos = -1.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            v1, l1, _ = edges[i]
+            v2, l2, _ = edges[j]
+            if l1 * l2 == 0:
+                continue
+            cos = abs(np.dot(v1, v2)) / (l1 * l2)
+            if cos > best_cos:
+                best_cos = cos
+                best_pair = (i, j)
+    return best_pair
+
+def find_best_edges(polygon_data):
+    """
+    Находит два наиболее параллельных ребра, сортирует их по длине.
+
+    Возвращает:
+        vertices (list) – список вершин в виде кортежей (x,y)
+        center (tuple) – центр многоугольника
+        edge1 (dict) – меньшее ребро (с ключами 'indices', 'points', 'length', 'deviation')
+        edge2 (dict) – большее ребро (аналогично)
+    """
+    # Преобразуем вершины из словарей в кортежи
+    vertices = [(v['x'], v['y']) for v in polygon_data['vertices']]
+    center = (polygon_data['center']['x'], polygon_data['center']['y'])
+
+    # Находим индексы двух наиболее параллельных рёбер
+    edge_indices = find_most_parallel_edges(vertices)
+    if edge_indices is None:  # защита на случай ошибки
+        edge_indices = (0, 1)
+
+    n = len(vertices)
+    edges_list = []
+    for idx in edge_indices:
+        p1 = vertices[idx]
+        p2 = vertices[(idx + 1) % n]
+        length = math.dist(p1, p2)
+        edges_list.append({
+            'indices': (idx, (idx + 1) % n),
+            'points': (p1, p2),
+            'length': length,
+            'deviation': 0  # не используется, можно оставить 0
         })
 
-    edges.sort(key=lambda x: x['deviation'])
+    # Сортируем по длине: edge1 – меньшее, edge2 – большее
+    edges_list.sort(key=lambda e: e['length'])
+    edge1, edge2 = edges_list[0], edges_list[1]
 
-    selected_edges = []
-    used_vertices = set()
-
-    for edge in edges:
-        v1_idx, v2_idx = edge['indices']
-
-        if v1_idx not in used_vertices and v2_idx not in used_vertices:
-            selected_edges.append(edge)
-            used_vertices.add(v1_idx)
-            used_vertices.add(v2_idx)
-
-            if len(selected_edges) == 2:
-                break
-
-    if len(selected_edges) < 2:
-        selected_edges = edges[:2]
-
-    # Определяем какое ребро меньше (по длине)
-    if selected_edges[0]['length'] <= selected_edges[1]['length']:
-        return vertices, center, selected_edges[0], selected_edges[1]
-    else:
-        return vertices, center, selected_edges[1], selected_edges[0]
-
+    return vertices, center, edge1, edge2
 
 def find_path_to_first_vertex_of_second_edge(vertices, edge1, edge2):
     """
@@ -858,8 +882,8 @@ def plot_polygon_with_parallel_spline(result, polygon_id):
         info_text += f"Начало парал.: ({int(round(offset_points[0][0]))}, {int(round(offset_points[0][1]))})\n"
         info_text += f"Конец парал.: ({int(round(offset_points[-1][0]))}, {int(round(offset_points[-1][1]))})"
 
-    plt.figtext(0.02, 0.02, info_text, fontsize=10,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+    # plt.figtext(0.02, 0.02, info_text, fontsize=10,
+    #             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
 
     plt.tight_layout()
     plt.show()
@@ -879,7 +903,7 @@ def main():
     current_centers = original_centers.copy()
 
     # Выбираем многоугольники для анализа (ID из примеров)
-    target_ids = [10, 25, 50]
+    target_ids = [1,10,50,25]
 
     for polygon_id in target_ids:
         print(f"\n{'=' * 60}")
@@ -921,16 +945,16 @@ def main():
                     spline_pixels.append((int(round(y)), int(round(x))))
 
             # Применяем перераспределение
-            new_labels, new_centers = reassign_superpixel_pixels(
-                current_labels,
-                current_centers,
-                spline_pixels,
-                polygon_id
-            )
-
-            # Обновляем для следующей итерации
-            current_labels = new_labels
-            current_centers = new_centers
+            # new_labels, new_centers = reassign_superpixel_pixels(
+            #     current_labels,
+            #     current_centers,
+            #     spline_pixels,
+            #     polygon_id
+            # )
+            #
+            # # Обновляем для следующей итерации
+            # current_labels = new_labels
+            # current_centers = new_centers
 
             # Визуализируем результат перераспределения
             visualize_redistribution_result(
