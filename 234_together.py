@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from rdp import rdp
 from typing import List, Tuple, Dict, Any
+DEBUG = True  # Включить вывод отладочной информации
 
 
 # ------------------------------------------------------------
@@ -77,14 +78,20 @@ def find_most_parallel_edges(vertices: List[Tuple[float, float]]) -> Tuple[int, 
     best_pair = None
     best_score = -1.0
 
+    if DEBUG:
+        print("\n" + "=" * 60)
+        print("ПОИСК НАИБОЛЕЕ ПАРАЛЛЕЛЬНЫХ РЁБЕР")
+        print("=" * 60)
+        print(f"Всего рёбер: {n}")
+
     for i in range(n):
         for j in range(i + 1, n):
-            # Проверяем, являются ли рёбра соседними
             vertices_i = {i, (i + 1) % n}
             vertices_j = {j, (j + 1) % n}
 
-            # Если есть общая вершина - пропускаем
             if vertices_i & vertices_j:
+                if DEBUG:
+                    print(f"Ребро {i} и ребро {j} - СОСЕДНИЕ, пропускаем")
                 continue
 
             v1, l1, _ = edges[i]
@@ -93,9 +100,20 @@ def find_most_parallel_edges(vertices: List[Tuple[float, float]]) -> Tuple[int, 
                 continue
             cos = abs(np.dot(v1, v2)) / (l1 * l2)
             score = (l1 + l2) * cos
+
+            if DEBUG:
+                print(f"Ребро {i}: длина={l1:.2f}, вектор={v1}")
+                print(f"Ребро {j}: длина={l2:.2f}, вектор={v2}")
+                print(f"  cos={cos:.4f}, score={score:.2f}")
+
             if score > best_score:
                 best_score = score
                 best_pair = (i, j)
+                if DEBUG:
+                    print(f"  *** НОВЫЙ ЛУЧШИЙ! ***")
+
+    if DEBUG and best_pair:
+        print(f"\nВЫБРАНЫ РЁБРА: {best_pair[0]} и {best_pair[1]}")
 
     return best_pair
 
@@ -105,19 +123,21 @@ def find_path_between_edges(vertices: List[Tuple[float, float]],
                             edge2: Tuple[int, int]) -> List[int]:
     """
     Находит путь между двумя рёбрами (список индексов вершин).
-    Возвращает кратчайший путь, не включающий вершины самих рёбер.
+    Возвращает путь, проходящий ПО ВСЕМ промежуточным вершинам.
     """
     a1, a2 = edge1
     b1, b2 = edge2
     n = len(vertices)
 
-    # Вершины, которые нужно исключить
     exclude_vertices = {a1, a2, b1, b2}
+
+    if DEBUG:
+        print(f"\nПОИСК ПУТИ: от {edge1} до {edge2}")
+        print(f"  Исключаемые вершины: {exclude_vertices}")
 
     best_path = None
     best_length = float('inf')
 
-    # Перебираем все комбинации начальной и конечной вершин
     for start in [a1, a2]:
         for end in [b1, b2]:
             if start == end:
@@ -143,9 +163,11 @@ def find_path_between_edges(vertices: List[Tuple[float, float]],
                     break
                 i = (i - 1) % n
 
+            if DEBUG:
+                print(f"  start={start}, end={end}: CW={path_cw}, CCW={path_ccw}")
+
             for path in [path_cw, path_ccw]:
                 if len(path) >= 2:
-                    # Вычисляем длину пути
                     path_length = 0.0
                     for k in range(len(path) - 1):
                         p1 = np.array(vertices[path[k]])
@@ -159,8 +181,10 @@ def find_path_between_edges(vertices: List[Tuple[float, float]],
     if best_path is None:
         best_path = [a1, b1]
 
-    return best_path
+    if DEBUG:
+        print(f"  ВЫБРАН ПУТЬ: {best_path}")
 
+    return best_path
 
 def get_offset_points_on_edge(edge_start: Tuple[float, float],
                               edge_end: Tuple[float, float],
@@ -175,11 +199,18 @@ def get_offset_points_on_edge(edge_start: Tuple[float, float],
 
     if edge_length < offset_distance * 2:
         mid = (start + end) / 2
+        if DEBUG:
+            print(f"  Ребро {edge_start}->{edge_end} короткое, середина={tuple(mid)}")
         return (tuple(mid), tuple(mid))
 
     direction = edge_vec / edge_length
     offset_from_start = start + direction * offset_distance
     offset_from_end = end - direction * offset_distance
+
+    if DEBUG:
+        print(f"  Ребро {edge_start}->{edge_end}:")
+        print(f"    offset_from_start={tuple(offset_from_start)}")
+        print(f"    offset_from_end={tuple(offset_from_end)}")
 
     return (tuple(offset_from_start), tuple(offset_from_end))
 
@@ -188,95 +219,111 @@ def build_polygon_from_lines(vertices: List[Tuple[float, float]],
                              offset_distance: float = 2.0) -> List[Tuple[float, float]]:
     """
     Строит многоугольник, образованный двумя прямыми и участками рёбер.
-
-    Многоугольник состоит из:
-    1. Внутренняя прямая (line1)
-    2. Часть первого ребра от точки на ребре до вершины
-    3. Внешняя прямая (line2)
-    4. Часть второго ребра от точки на ребре до вершины
-
-    Возвращает список точек многоугольника (замкнутый).
     """
     n = len(vertices)
     if n < 4:
         return vertices
 
-    # Найти наиболее параллельные несоседние рёбра
     e1_idx, e2_idx = find_most_parallel_edges(vertices)
 
     if e1_idx is None or e2_idx is None:
         return vertices
 
-    # Получить вершины рёбер
     a1 = e1_idx
     a2 = (e1_idx + 1) % n
     b1 = e2_idx
     b2 = (e2_idx + 1) % n
 
+    if DEBUG:
+        print(f"\nВЫБРАННЫЕ РЁБРА:")
+        print(f"  Ребро {e1_idx}: вершины {vertices[a1]} и {vertices[a2]}")
+        print(f"  Ребро {e2_idx}: вершины {vertices[b1]} и {vertices[b2]}")
+
     edge1_vertices = (vertices[a1], vertices[a2])
     edge2_vertices = (vertices[b1], vertices[b2])
 
-    # Найти путь между рёбрами (для внутренней прямой)
     path_indices = find_path_between_edges(vertices, (a1, a2), (b1, b2))
     path_points = [vertices[i] for i in path_indices]
 
-    # Первая прямая (внутренняя) - от первой до последней точки пути
-    if len(path_points) >= 2:
-        line1_start = path_points[0]
-        line1_end = path_points[-1]
-    else:
-        line1_start = path_points[0]
-        line1_end = path_points[0]
+    if DEBUG:
+        print(f"\nПУТЬ МЕЖДУ РЁБРАМИ: {path_points}")
 
-    # Получаем смещённые точки на рёбрах
+    if len(path_points) < 2:
+        path_points = [edge1_vertices[0], edge2_vertices[0]]
+
+    # Внутренняя прямая
+    line1_start = path_points[0]
+    line1_end = path_points[-1]
+
+    # Получаем смещённые точки
     offset_start1, offset_end1 = get_offset_points_on_edge(edge1_vertices[0], edge1_vertices[1], offset_distance)
     offset_start2, offset_end2 = get_offset_points_on_edge(edge2_vertices[0], edge2_vertices[1], offset_distance)
 
-    # Вторая прямая (внешняя) - от точки на первом ребре до точки на втором ребре
-    line2_start = offset_end1  # Внутренняя точка на первом ребре
-    line2_end = offset_start2  # Внутренняя точка на втором ребре
+    # Внешняя прямая: берём смещения с противоположных сторон от пути
+    dist_a1_to_start = np.linalg.norm(np.array(edge1_vertices[0]) - np.array(line1_start))
+    dist_a2_to_start = np.linalg.norm(np.array(edge1_vertices[1]) - np.array(line1_start))
+    dist_b1_to_end = np.linalg.norm(np.array(edge2_vertices[0]) - np.array(line1_end))
+    dist_b2_to_end = np.linalg.norm(np.array(edge2_vertices[1]) - np.array(line1_end))
 
-    # Строим многоугольник (обходим по часовой стрелке)
+    if dist_a1_to_start < dist_a2_to_start:
+        line2_start = offset_start1
+    else:
+        line2_start = offset_end1
+
+    if dist_b1_to_end < dist_b2_to_end:
+        line2_end = offset_end2
+    else:
+        line2_end = offset_start2
+
+    if DEBUG:
+        print(f"\nline1: {line1_start} -> {line1_end}")
+        print(f"line2: {line2_start} -> {line2_end}")
+
+    # Строим многоугольник (без дубликатов)
     polygon = []
 
-    # 1. Добавляем точки внутренней прямой от начала к концу
-    polygon.append(line1_start)
-    polygon.append(line1_end)
+    def add_unique(point):
+        if point not in polygon:
+            polygon.append(point)
 
-    # 2. Идём по второму ребру от вершины b1 до смещённой точки offset_start2
-    #    (или от b2 до offset_end2 в зависимости от направления)
-    # Определяем направление обхода
+    # 1. Внутренняя прямая
+    add_unique(line1_start)
 
-    # Проверяем, какая вершина второго ребра ближе к line1_end
+    # 2. Промежуточные точки пути
+    for pt in path_points[1:-1]:
+        add_unique(pt)
+
+    # 3. Конец внутренней прямой
+    add_unique(line1_end)
+
+    # 4. Вершина второго ребра (ближайшая к line1_end)
     dist_to_b1 = np.linalg.norm(np.array(line1_end) - np.array(edge2_vertices[0]))
     dist_to_b2 = np.linalg.norm(np.array(line1_end) - np.array(edge2_vertices[1]))
-
     if dist_to_b1 < dist_to_b2:
-        # Идём от b1 к offset_start2
-        polygon.append(edge2_vertices[0])  # b1
-        polygon.append(line2_end)  # offset_start2
+        add_unique(edge2_vertices[0])
     else:
-        # Идём от b2 к offset_end2
-        polygon.append(edge2_vertices[1])  # b2
-        polygon.append(line2_end)  # offset_start2 (но это может быть offset_end2)
-        # Нужно уточнить: line2_end = offset_start2, а offset_end2 на том же ребре с другой стороны
+        add_unique(edge2_vertices[1])
 
-    # 3. Добавляем точки внешней прямой от конца к началу (обратный порядок)
-    polygon.append(line2_end)
-    polygon.append(line2_start)
+    # 5. Внешняя прямая
+    add_unique(line2_end)
+    add_unique(line2_start)
 
-    # 4. Идём по первому ребру от смещённой точки offset_start1 до вершины
-    #    или от offset_end1 до вершины
+    # 6. Вершина первого ребра (ближайшая к line2_start)
     dist_to_a1 = np.linalg.norm(np.array(line2_start) - np.array(edge1_vertices[0]))
     dist_to_a2 = np.linalg.norm(np.array(line2_start) - np.array(edge1_vertices[1]))
-
     if dist_to_a1 < dist_to_a2:
-        polygon.append(edge1_vertices[0])  # a1
+        add_unique(edge1_vertices[0])
     else:
-        polygon.append(edge1_vertices[1])  # a2
+        add_unique(edge1_vertices[1])
 
-    # Замыкаем многоугольник (добавляем первую точку в конец)
-    polygon.append(polygon[0])
+    # Замыкаем
+    if len(polygon) > 0 and polygon[0] != polygon[-1]:
+        polygon.append(polygon[0])
+
+    if DEBUG:
+        print(f"\nМНОГОУГОЛЬНИК ({len(polygon)} точек):")
+        for i, pt in enumerate(polygon):
+            print(f"  [{i}]: {pt}")
 
     return polygon
 
@@ -285,38 +332,45 @@ def build_two_lines(vertices: List[Tuple[float, float]],
                     offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
     """
     Строит две прямые и возвращает их вместе с многоугольником.
-    Возвращает: (line1, line2, polygon)
     """
+    if DEBUG:
+        print("\n" + "=" * 60)
+        print("ПОСТРОЕНИЕ ПРЯМЫХ")
+        print("=" * 60)
+
     polygon = build_polygon_from_lines(vertices, offset_distance)
 
-    # Извлекаем две прямые из многоугольника
-    if len(polygon) >= 4:
-        # Внутренняя прямая - первая и вторая точки многоугольника
-        line1 = np.array([polygon[0], polygon[1]])
-        # Внешняя прямая - точки в середине многоугольника
-        # Находим точки, которые не являются вершинами суперпикселя
-        line2 = None
-        for i in range(len(polygon) - 1):
-            pt = polygon[i]
-            # Проверяем, является ли точка вершиной суперпикселя
-            is_vertex = any(np.linalg.norm(np.array(pt) - np.array(v)) < 0.1 for v in vertices)
-            if not is_vertex and line2 is None:
+    if len(polygon) < 4:
+        line1 = np.array([vertices[0], vertices[1]])
+        line2 = np.array([vertices[0], vertices[1]])
+        if DEBUG:
+            print("\nМногоугольник слишком маленький")
+        return line1, line2, polygon
+
+    # Внутренняя прямая
+    line1 = np.array([polygon[0], polygon[1]])
+
+    # Внешняя прямая - ищем две уникальные точки, не являющиеся вершинами
+    line2 = None
+    for i in range(len(polygon) - 1):
+        pt = polygon[i]
+        is_vertex = any(np.linalg.norm(np.array(pt) - np.array(v)) < 0.1 for v in vertices)
+        if not is_vertex:
+            if line2 is None:
                 line2_start = pt
-            elif not is_vertex and line2 is not None:
+            else:
                 line2_end = pt
                 line2 = np.array([line2_start, line2_end])
                 break
 
-        if line2 is None:
-            # Если не нашли, берём третью и четвёртую точки
-            line2 = np.array([polygon[2], polygon[3]] if len(polygon) > 3 else [polygon[0], polygon[1]])
-    else:
-        line1 = np.array([vertices[0], vertices[1]])
-        line2 = np.array([vertices[0], vertices[1]])
+    if line2 is None:
+        line2 = np.array([polygon[2], polygon[3]] if len(polygon) > 3 else [polygon[0], polygon[1]])
+
+    if DEBUG:
+        print(f"\nВНУТРЕННЯЯ ПРЯМАЯ (line1): {line1[0]} -> {line1[1]}")
+        print(f"ВНЕШНЯЯ ПРЯМАЯ (line2): {line2[0]} -> {line2[1]}")
 
     return line1, line2, polygon
-
-
 def point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
     """
     Проверяет, находится ли точка внутри полигона (алгоритм с лучом).
