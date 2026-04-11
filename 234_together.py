@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from rdp import rdp
 from typing import List, Tuple, Dict, Any
+from scipy.interpolate import splprep, splev   # <-- добавлен импорт
 
 DEBUG = True  # Включить вывод отладочной информации
 
@@ -135,10 +136,10 @@ def point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, floa
 
 def build_two_lines(vertices: List[Tuple[float, float]],
                     offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
-    """НОВАЯ ВЕРСИЯ: строит две ПАРАЛЛЕЛЬНЫЕ прямые + выводит маршрут inner line."""
+    """Построение двух линий (прямых или сплайнов) и многоугольника сохранения."""
     if DEBUG:
         print("\n" + "=" * 60)
-        print("ПОСТРОЕНИЕ ПРЯМЫХ (НОВАЯ ВЕРСИЯ — ПАРАЛЛЕЛЬНЫЕ ПРЯМЫЕ)")
+        print("ПОСТРОЕНИЕ ЛИНИЙ (ПРЯМЫЕ ИЛИ СПЛАЙНЫ)")
         print("=" * 60)
 
     if len(vertices) < 4:
@@ -203,7 +204,6 @@ def build_two_lines(vertices: List[Tuple[float, float]],
     if DEBUG:
         print(f"Выбрана длинная дуга: от вершины {longer_from_idx} до {longer_to_idx}")
 
-    # ----- ВЫВОД МАРШРУТА ДЛЯ INNER LINE (line1) -----
     path_indices, _ = get_cw_path_info(longer_from_idx, longer_to_idx)
     path_vertices = [vertices[i] for i in path_indices]
     if DEBUG:
@@ -212,7 +212,6 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         print(f"  {arrow}")
         indices_str = " -> ".join(map(str, path_indices))
         print(f"  Индексы вершин: {indices_str}\n")
-    # -------------------------------------------------
 
     small_endpoints = {small_idx, (small_idx + 1) % n}
     if longer_from_idx in small_endpoints:
@@ -225,53 +224,23 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         chosen_small_idx = small_idx
         chosen_large_idx = large_idx
 
-    line1_start_pt = vertices[chosen_small_idx]
-    line1_end_pt = vertices[chosen_large_idx]
-    line1 = np.array([line1_start_pt, line1_end_pt])
+    small_attach1 = np.array(vertices[chosen_small_idx])
+    large_attach1 = np.array(vertices[chosen_large_idx])
 
     d = max(small_len - 1.0, 0.5)
 
-    if DEBUG:
-        print(f"Первая прямая (line1): {line1_start_pt} → {line1_end_pt}")
-        print(f"Смещение второй прямой: d = {d:.2f} (теоретическое)")
-
-    dir_vec = line1[1] - line1[0]
-    line_len = np.linalg.norm(dir_vec)
-    if line_len < 1e-6:
-        if DEBUG:
-            print("Вырожденная первая прямая")
-        dummy = line1.copy()
-        polygon = [tuple(line1[0]), tuple(line1[1]), tuple(line1[0])]
-        return line1, dummy, polygon
-
-    unit_dir = dir_vec / line_len
-    perp1 = np.array([-unit_dir[1], unit_dir[0]])
-    perp2 = -perp1
-
-    mid = (line1[0] + line1[1]) / 2
-    center = np.mean([np.array(p) for p in vertices], axis=0)
-
-    vec_to_center = center - mid
-    norm = np.linalg.norm(vec_to_center)
-    if norm > 1e-8:
-        unit_to_center = vec_to_center / norm
-    else:
-        unit_to_center = np.array([0., 0.])
-
-    dot1 = np.dot(perp1, unit_to_center)
-    dot2 = np.dot(perp2, unit_to_center)
-    chosen_perp = perp1 if dot1 > dot2 else perp2
-
-    if DEBUG:
-        direction = "ВНУТРЬ (к центру)" if np.dot(chosen_perp, vec_to_center) > 0 else "НАРУЖУ"
-        print(f"Выбрано направление смещения: {direction}")
-
     small_start = np.array(vertices[small_idx])
     small_end = np.array(vertices[(small_idx + 1) % n])
-    small_mid = (np.array(vertices[small_idx]) + np.array(vertices[(small_idx + 1)])) / 2.0
+    small_mid = (small_start + small_end) / 2.0
 
     large_p = np.array(vertices[large_idx])
     large_vec = np.array(vertices[(large_idx + 1) % n]) - large_p
+
+    dir_vec = large_attach1 - small_attach1
+    line_len = np.linalg.norm(dir_vec)
+    if line_len < 1e-6:
+        dummy = np.array([small_attach1, large_attach1])
+        return dummy, dummy, [tuple(small_attach1), tuple(large_attach1), tuple(small_mid)]
 
     inter_pos, s_pos = line_intersection(small_mid, dir_vec, large_p, large_vec)
     inter_neg, s_neg = line_intersection(small_mid, -dir_vec, large_p, large_vec)
@@ -290,48 +259,87 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         else:
             inter_large = small_mid
 
-    line2 = np.array([small_mid, inter_large])
+    small_attach2 = small_mid
+    large_attach2 = inter_large
 
     if DEBUG:
-        vec2 = line2[1] - line2[0]
-        actual_cos = np.dot(vec2, dir_vec) / (
-                np.linalg.norm(vec2) * np.linalg.norm(dir_vec) + 1e-8
-        )
-        print(f"Вторая прямая (line2): {line2[0]} → {line2[1]}")
-        print(f"  Проверка параллельности: cos = {actual_cos:.6f} (должен быть ≈ 1.000000)")
-        print(f"  Начинается из середины меньшего ребра: {small_mid}")
-        print(f"  Заканчивается на втором ребре (s ≈ {s_pos if 's_pos' in locals() else s_neg:.3f})")
+        print(f"\nОпорные точки (старые):")
+        print(f"  small_attach1: {small_attach1}")
+        print(f"  large_attach1: {large_attach1}")
+        print(f"  small_attach2: {small_attach2}")
+        print(f"  large_attach2: {large_attach2}")
 
-    small_attach1 = line1[0]
-    large_attach1 = line1[1]
-    small_attach2 = line2[0]
-    large_attach2 = line2[1]
+    # ---------- ПРОВЕРКА НА ВОЗМОЖНОСТЬ ПОСТРОЕНИЯ СПЛАЙНА ----------
+    path_array = np.array(path_vertices)
+    use_spline = (len(path_array) >= 4)
 
-    poly_cand1 = [small_attach1, large_attach1, large_attach2, small_attach2]
-    poly_cand2 = [small_attach1, small_attach2, large_attach2, large_attach1]
+    if use_spline:
+        # ---------- СПЛАЙН LINE1 ----------
+        tck, u = splprep(path_array.T, s=0, k=3)
+        u_new = np.linspace(0, 1, 200)
+        line1_curve = np.column_stack(splev(u_new, tck))
 
-    mid_strip = (small_attach1 + large_attach1 + small_attach2 + large_attach2) / 4.0
+        # ---------- СПЛАЙН LINE2 (сохраняя изогнутость) ----------
+        delta_start = small_attach2 - small_attach1
+        delta_end = large_attach2 - large_attach1
 
-    chosen_polygon_list = poly_cand1
-    for cand in [poly_cand1, poly_cand2]:
-        poly_closed = cand + [cand[0]] if not np.allclose(np.asarray(cand[0]), np.asarray(cand[-1]),
-                                                          atol=1e-6) else cand
-        if point_in_polygon(tuple(mid_strip), poly_closed):
-            chosen_polygon_list = cand
-            break
+        u_samples = np.linspace(0, 1, 100)
+        points1 = np.column_stack(splev(u_samples, tck))
+        line2_curve = []
+        for i, t in enumerate(u_samples):
+            p1 = points1[i]
+            delta = delta_start * (1 - t) + delta_end * t
+            line2_curve.append(p1 + delta)
+        line2_curve = np.array(line2_curve)
 
-    polygon = [tuple(p) for p in chosen_polygon_list]
-    if not np.allclose(np.asarray(polygon[0]), np.asarray(polygon[-1]), atol=1e-6):
-        polygon.append(polygon[0])
+        # ---------- МНОГОУГОЛЬНИК ----------
+        poly_points = [tuple(small_attach1)]
+        poly_points.extend([tuple(p) for p in line1_curve])
+        poly_points.append(tuple(large_attach1))
+        poly_points.append(tuple(large_attach2))
+        poly_points.extend([tuple(p) for p in reversed(line2_curve)])
+        poly_points.append(tuple(small_attach2))
+        if not np.allclose(poly_points[0], poly_points[-1], atol=1e-6):
+            poly_points.append(poly_points[0])
 
-    if DEBUG:
-        print(f"\nМНОГОУГОЛЬНИК (keep region, {len(polygon)} точек):")
-        for i, pt in enumerate(polygon):
-            print(f"  [{i}]: {pt}")
-        print(f"ВНУТРЕННЯЯ ПРЯМАЯ (line1): {line1[0]} → {line1[1]}")
-        print(f"ПАРАЛЛЕЛЬНАЯ ПРЯМАЯ (line2): {line2[0]} → {line2[1]}")
+        if DEBUG:
+            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(poly_points)} точек) построен.")
+            print(f"ВНУТРЕННЯЯ КРИВАЯ (line1) содержит {len(line1_curve)} точек.")
+            print(f"ВНЕШНЯЯ КРИВАЯ (line2) содержит {len(line2_curve)} точек.")
 
-    return line1, line2, polygon
+        return line1_curve, line2_curve, poly_points
+
+    else:
+        # ---------- ИСХОДНЫЙ МЕТОД ПРЯМЫХ ----------
+        line1 = np.array([small_attach1, large_attach1])
+        line2 = np.array([small_attach2, large_attach2])
+
+        # Многоугольник из четырёх точек (прямые линии)
+        poly_cand1 = [small_attach1, large_attach1, large_attach2, small_attach2]
+        poly_cand2 = [small_attach1, small_attach2, large_attach2, large_attach1]
+
+        mid_strip = (small_attach1 + large_attach1 + small_attach2 + large_attach2) / 4.0
+
+        chosen_polygon_list = poly_cand1
+        for cand in [poly_cand1, poly_cand2]:
+            poly_closed = cand + [cand[0]] if not np.allclose(np.asarray(cand[0]), np.asarray(cand[-1]),
+                                                              atol=1e-6) else cand
+            if point_in_polygon(tuple(mid_strip), poly_closed):
+                chosen_polygon_list = cand
+                break
+
+        polygon = [tuple(p) for p in chosen_polygon_list]
+        if not np.allclose(np.asarray(polygon[0]), np.asarray(polygon[-1]), atol=1e-6):
+            polygon.append(polygon[0])
+
+        if DEBUG:
+            print("\nНедостаточно точек для сплайна (менее 4). Используются прямые.")
+            print(f"ВНУТРЕННЯЯ ПРЯМАЯ (line1): {line1[0]} → {line1[1]}")
+            print(f"ПАРАЛЛЕЛЬНАЯ ПРЯМАЯ (line2): {line2[0]} → {line2[1]}")
+
+        return line1, line2, polygon
+
+
 # ------------------------------------------------------------
 # ВЕРНУТЫЕ ОРИГИНАЛЬНЫЕ ФУНКЦИИ ОТРИСОВКИ (точно как в вашем первом файле)
 # ------------------------------------------------------------
@@ -344,7 +352,7 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
     # Исходный суперпиксель
     orig_boundary = [(p["x"], p["y"]) for p in original_sp["boundary_points"]]
     orig_ordered = order_boundary_points(orig_boundary)
-    orig_vertices = simplify_boundary(orig_ordered, epsilon=2.2)
+    orig_vertices = simplify_boundary(orig_ordered)
     orig_vertices = filter_close_points(orig_vertices)
 
     line1, line2, polygon = build_two_lines(orig_vertices, offset_distance)
@@ -357,7 +365,7 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
         if sp:
             bound = [(p["x"], p["y"]) for p in sp["boundary_points"]]
             bound_ord = order_boundary_points(bound)
-            bound_simp = simplify_boundary(bound_ord, epsilon=2.2)
+            bound_simp = simplify_boundary(bound_ord)
             neighbor_boundaries[nid] = filter_close_points(bound_simp)
             neighbor_centers[nid] = (sp["center"]["x"], sp["center"]["y"])
 
@@ -379,7 +387,7 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
         if first_neighbor_sp:
             first_neighbor_bound = [(p["x"], p["y"]) for p in first_neighbor_sp["boundary_points"]]
             first_neighbor_ordered = order_boundary_points(first_neighbor_bound)
-            first_neighbor_simplified = simplify_boundary(first_neighbor_ordered, epsilon=2.2)
+            first_neighbor_simplified = simplify_boundary(first_neighbor_ordered)
             first_neighbor_vertices = filter_close_points(first_neighbor_simplified)
 
             first_neighbor_line1, first_neighbor_line2, first_neighbor_polygon = build_two_lines(
@@ -561,7 +569,7 @@ def visualize_intermediate_with_lines(original_sp: Dict[str, Any],
     """Оригинальная промежуточная визуализация (одно окно)"""
     orig_boundary = [(p["x"], p["y"]) for p in original_sp["boundary_points"]]
     orig_ordered = order_boundary_points(orig_boundary)
-    orig_vertices = simplify_boundary(orig_ordered, epsilon=2.2)
+    orig_vertices = simplify_boundary(orig_ordered)
     orig_vertices = filter_close_points(orig_vertices)
 
     line1, line2, polygon = build_two_lines(orig_vertices, offset_distance)
@@ -574,7 +582,7 @@ def visualize_intermediate_with_lines(original_sp: Dict[str, Any],
         if sp:
             bound = [(p["x"], p["y"]) for p in sp["boundary_points"]]
             bound_ord = order_boundary_points(bound)
-            bound_simp = simplify_boundary(bound_ord, epsilon=2.2)
+            bound_simp = simplify_boundary(bound_ord)
             neighbor_boundaries[nid] = filter_close_points(bound_simp)
             neighbor_centers[nid] = (sp["center"]["x"], sp["center"]["y"])
 
@@ -640,7 +648,7 @@ def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
 
     boundary_points = [(p["x"], p["y"]) for p in sp["boundary_points"]]
     ordered_boundary = order_boundary_points(boundary_points)
-    simplified_boundary = simplify_boundary(ordered_boundary, epsilon=2.2)
+    simplified_boundary = simplify_boundary(ordered_boundary)
     vertices = filter_close_points(simplified_boundary)
 
     line1, line2, polygon = build_two_lines(vertices, offset_distance)
