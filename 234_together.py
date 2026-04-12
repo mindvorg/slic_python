@@ -134,6 +134,13 @@ def point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, floa
     return inside
 
 
+def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir: np.ndarray) -> np.ndarray:
+    """Проецирует точку на прямую, заданную точкой и направляющим вектором."""
+    vec = point - line_point
+    t = np.dot(vec, line_dir) / np.dot(line_dir, line_dir)
+    return line_point + t * line_dir
+
+
 def build_two_lines(vertices: List[Tuple[float, float]],
                     offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
     """Построение двух линий (прямых или сплайнов) и многоугольника сохранения."""
@@ -269,56 +276,123 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         print(f"  small_attach2: {small_attach2}")
         print(f"  large_attach2: {large_attach2}")
 
-    # ---------- ПРОВЕРКА НА ВОЗМОЖНОСТЬ ПОСТРОЕНИЯ СПЛАЙНА ----------
+    # ---------- ПОСТРОЕНИЕ ПЕРВОЙ КРИВОЙ (line1) ----------
     path_array = np.array(path_vertices)
     use_spline = (len(path_array) >= 4)
 
     if use_spline:
-        # ---------- СПЛАЙН LINE1 ----------
+        # Первая кривая - сплайн по дуге
         tck, u = splprep(path_array.T, s=0, k=3)
         u_new = np.linspace(0, 1, 200)
         line1_curve = np.column_stack(splev(u_new, tck))
+    else:
+        # Прямая линия между small_attach1 и large_attach1
+        line1_curve = np.array([small_attach1, large_attach1])
 
-        # ---------- СПЛАЙН LINE2 (сохраняя изогнутость) ----------
-        delta_start = small_attach2 - small_attach1
-        delta_end = large_attach2 - large_attach1
+    # ---------- НОВОЕ ПОСТРОЕНИЕ ВТОРОЙ КРИВОЙ (line2) с фиксированными концами ----------
+    # 1. Определяем точные концы на рёбрах
+    small_edge_dir = small_end - small_start
+    small_edge_len = np.linalg.norm(small_edge_dir)
+    small_edge_dir_norm = small_edge_dir / small_edge_len
+    large_edge_dir_norm = large_vec / np.linalg.norm(large_vec)
 
-        u_samples = np.linspace(0, 1, 100)
-        points1 = np.column_stack(splev(u_samples, tck))
-        line2_curve = []
-        for i, t in enumerate(u_samples):
-            p1 = points1[i]
-            delta = delta_start * (1 - t) + delta_end * t
-            line2_curve.append(p1 + delta)
-        line2_curve = np.array(line2_curve)
+    # Проекции на прямые (параметры t)
+    vec_small = small_attach2 - small_start
+    t_small = np.dot(vec_small, small_edge_dir_norm) / small_edge_len
+    t_small = np.clip(t_small, 0.0, 1.0)
+    P_start = small_start + t_small * small_edge_dir
 
-        # ---------- МНОГОУГОЛЬНИК ----------
+    vec_large = large_attach2 - large_p
+    large_edge_len = np.linalg.norm(large_vec)
+    t_large = np.dot(vec_large, large_edge_dir_norm) / large_edge_len
+    t_large = np.clip(t_large, 0.0, 1.0)
+    P_end = large_p + t_large * large_vec
+
+    if DEBUG:
+        print(f"\nНОВЫЕ КОНЦЫ ДЛЯ LINE2 (проекции на рёбра, обрезанные):")
+        print(f"  P_start (на малом ребре): {P_start}")
+        print(f"  P_end   (на большом ребре): {P_end}")
+
+    # 2. Строим line2 с помощью гомотетии относительно точки пересечения рёбер
+    # Находим точку пересечения прямых, содержащих рёбра
+    inter_edges, _ = line_intersection(small_start, small_edge_dir, large_p, large_vec)
+    if inter_edges is not None:
+        # Вычисляем масштабные коэффициенты для концов line1 и line2
+        # Расстояние от центра гомотетии до точек
+        def dist_from_center(pt):
+            return np.linalg.norm(pt - inter_edges)
+
+        d1_start = dist_from_center(small_attach1)
+        d1_end = dist_from_center(large_attach1)
+        d2_start = dist_from_center(P_start)
+        d2_end = dist_from_center(P_end)
+
+        # Избегаем деления на ноль
+        if d1_start > 1e-6 and d1_end > 1e-6:
+            scale_start = d2_start / d1_start
+            scale_end = d2_end / d1_end
+        else:
+            scale_start = scale_end = 1.0
+    else:
+        # Рёбра параллельны — используем параллельный перенос
+        inter_edges = None
+        scale_start = scale_end = 1.0
+
+    if use_spline:
+        # Генерируем точки первой кривой
+        num_samples = 100
+        t_samples = np.linspace(0, 1, num_samples)
+        points_line1 = np.column_stack(splev(t_samples, tck))
+
+        line2_points = []
+        for i, t in enumerate(t_samples):
+            p1 = points_line1[i]
+            if inter_edges is not None:
+                # Гомотетия с линейно интерполированным масштабом
+                scale = scale_start * (1 - t) + scale_end * t
+                p2 = inter_edges + scale * (p1 - inter_edges)
+            else:
+                # Параллельный перенос (линейная интерполяция смещения)
+                delta_start = P_start - small_attach1
+                delta_end = P_end - large_attach1
+                delta = delta_start * (1 - t) + delta_end * t
+                p2 = p1 + delta
+            line2_points.append(p2)
+        line2_curve = np.array(line2_points)
+    else:
+        # Прямые линии
+        if inter_edges is not None:
+            # Гомотетия для концов отрезка
+            scale_start = dist_from_center(P_start) / dist_from_center(small_attach1)
+            scale_end = dist_from_center(P_end) / dist_from_center(large_attach1)
+            # Для промежуточных точек можно линейно интерполировать масштаб, но у нас всего две точки
+            # Поэтому строим прямую между P_start и P_end
+            line2_curve = np.array([P_start, P_end])
+        else:
+            line2_curve = np.array([P_start, P_end])
+
+    # ---------- ПОСТРОЕНИЕ МНОГОУГОЛЬНИКА ----------
+    if use_spline:
         poly_points = [tuple(small_attach1)]
         poly_points.extend([tuple(p) for p in line1_curve])
         poly_points.append(tuple(large_attach1))
-        poly_points.append(tuple(large_attach2))
+        poly_points.append(tuple(P_end))
         poly_points.extend([tuple(p) for p in reversed(line2_curve)])
-        poly_points.append(tuple(small_attach2))
+        poly_points.append(tuple(P_start))
         if not np.allclose(poly_points[0], poly_points[-1], atol=1e-6):
             poly_points.append(poly_points[0])
 
+        polygon = poly_points   # <-- ИСПРАВЛЕНО: присваиваем переменной polygon
+
         if DEBUG:
-            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(poly_points)} точек) построен.")
+            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(polygon)} точек) построен.")
             print(f"ВНУТРЕННЯЯ КРИВАЯ (line1) содержит {len(line1_curve)} точек.")
             print(f"ВНЕШНЯЯ КРИВАЯ (line2) содержит {len(line2_curve)} точек.")
-
-        return line1_curve, line2_curve, poly_points
-
     else:
-        # ---------- ИСХОДНЫЙ МЕТОД ПРЯМЫХ ----------
-        line1 = np.array([small_attach1, large_attach1])
-        line2 = np.array([small_attach2, large_attach2])
+        poly_cand1 = [small_attach1, large_attach1, P_end, P_start]
+        poly_cand2 = [small_attach1, P_start, P_end, large_attach1]
 
-        # Многоугольник из четырёх точек (прямые линии)
-        poly_cand1 = [small_attach1, large_attach1, large_attach2, small_attach2]
-        poly_cand2 = [small_attach1, small_attach2, large_attach2, large_attach1]
-
-        mid_strip = (small_attach1 + large_attach1 + small_attach2 + large_attach2) / 4.0
+        mid_strip = (small_attach1 + large_attach1 + P_start + P_end) / 4.0
 
         chosen_polygon_list = poly_cand1
         for cand in [poly_cand1, poly_cand2]:
@@ -334,12 +408,10 @@ def build_two_lines(vertices: List[Tuple[float, float]],
 
         if DEBUG:
             print("\nНедостаточно точек для сплайна (менее 4). Используются прямые.")
-            print(f"ВНУТРЕННЯЯ ПРЯМАЯ (line1): {line1[0]} → {line1[1]}")
-            print(f"ПАРАЛЛЕЛЬНАЯ ПРЯМАЯ (line2): {line2[0]} → {line2[1]}")
+            print(f"ВНУТРЕННЯЯ ПРЯМАЯ (line1): {small_attach1} → {large_attach1}")
+            print(f"ВНЕШНЯЯ ПРЯМАЯ (line2): {P_start} → {P_end}")
 
-        return line1, line2, polygon
-
-
+    return line1_curve, line2_curve, polygon
 # ------------------------------------------------------------
 # ВЕРНУТЫЕ ОРИГИНАЛЬНЫЕ ФУНКЦИИ ОТРИСОВКИ (точно как в вашем первом файле)
 # ------------------------------------------------------------
