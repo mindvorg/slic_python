@@ -6,6 +6,7 @@ from matplotlib.patches import Polygon
 from rdp import rdp
 from typing import List, Tuple, Dict, Any
 from scipy.interpolate import splprep, splev   # <-- добавлен импорт
+from scipy.spatial import ConvexHull
 
 DEBUG = True  # Включить вывод отладочной информации
 
@@ -21,8 +22,7 @@ def order_boundary_points(points: List[Tuple[float, float]]) -> List[Tuple[float
     ordered = sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
     return ordered
 
-
-def simplify_boundary(points: List[Tuple[float, float]], epsilon: float = 2.2) -> List[Tuple[float, float]]:
+def simplify_boundary(points: List[Tuple[float, float]], epsilon: float = 1.5) -> List[Tuple[float, float]]:
     if len(points) < 3:
         return points
     pts = np.array(points)
@@ -143,7 +143,8 @@ def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir:
 
 def build_two_lines(vertices: List[Tuple[float, float]],
                     offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
-    """Построение двух линий (прямых или сплайнов) и многоугольника сохранения."""
+    """Построение двух линий (прямых или сплайнов) и многоугольника сохранения.
+    polygon точно между кривыми. Алгоритм line2 — оригинальный из вашего файла."""
     if DEBUG:
         print("\n" + "=" * 60)
         print("ПОСТРОЕНИЕ ЛИНИЙ (ПРЯМЫЕ ИЛИ СПЛАЙНЫ)")
@@ -213,12 +214,6 @@ def build_two_lines(vertices: List[Tuple[float, float]],
 
     path_indices, _ = get_cw_path_info(longer_from_idx, longer_to_idx)
     path_vertices = [vertices[i] for i in path_indices]
-    if DEBUG:
-        print("\nМаршрут inner line (line1):")
-        arrow = " -> ".join([f"({v[0]:.1f},{v[1]:.1f})" for v in path_vertices])
-        print(f"  {arrow}")
-        indices_str = " -> ".join(map(str, path_indices))
-        print(f"  Индексы вершин: {indices_str}\n")
 
     small_endpoints = {small_idx, (small_idx + 1) % n}
     if longer_from_idx in small_endpoints:
@@ -238,7 +233,27 @@ def build_two_lines(vertices: List[Tuple[float, float]],
 
     small_start = np.array(vertices[small_idx])
     small_end = np.array(vertices[(small_idx + 1) % n])
-    small_mid = (small_start + small_end) / 2.0
+    small_len = np.linalg.norm(small_end - small_start)
+
+    # ----- ИСПРАВЛЕНИЕ: отсчёт от chosen_small_idx к другому концу ребра -----
+    if chosen_small_idx == small_idx:
+        start_vertex = small_start
+        end_vertex = small_end
+    else:  # chosen_small_idx == (small_idx + 1) % n
+        start_vertex = small_end
+        end_vertex = small_start
+
+    small_edge_dir = end_vertex - start_vertex
+    small_edge_len = np.linalg.norm(small_edge_dir)
+
+    if small_len > 1.0:
+        t_small_attach = (small_len - 1.0) / small_len
+        small_attach2 = start_vertex + t_small_attach * small_edge_dir
+        small_attach2 = np.round(small_attach2).astype(int)
+    else:
+        small_mid = (small_start + small_end) / 2.0
+        small_attach2 = small_mid
+    # -------------------------------------------------------------------------
 
     large_p = np.array(vertices[large_idx])
     large_vec = np.array(vertices[(large_idx + 1) % n]) - large_p
@@ -247,10 +262,11 @@ def build_two_lines(vertices: List[Tuple[float, float]],
     line_len = np.linalg.norm(dir_vec)
     if line_len < 1e-6:
         dummy = np.array([small_attach1, large_attach1])
-        return dummy, dummy, [tuple(small_attach1), tuple(large_attach1), tuple(small_mid)]
+        return dummy, dummy, [tuple(small_attach1), tuple(large_attach1), tuple(small_attach2)]
 
-    inter_pos, s_pos = line_intersection(small_mid, dir_vec, large_p, large_vec)
-    inter_neg, s_neg = line_intersection(small_mid, -dir_vec, large_p, large_vec)
+    # Ищем пересечение прямой от small_attach2 с большим ребром (и его продолжением)
+    inter_pos, s_pos = line_intersection(small_attach2, dir_vec, large_p, large_vec)
+    inter_neg, s_neg = line_intersection(small_attach2, -dir_vec, large_p, large_vec)
 
     candidates = []
     if inter_pos is not None and s_pos is not None and 0.0 <= s_pos <= 1.0:
@@ -264,39 +280,25 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         if inter_pos is not None:
             inter_large = inter_pos
         else:
-            inter_large = small_mid
+            inter_large = small_attach2
 
-    small_attach2 = small_mid
     large_attach2 = inter_large
-
-    if DEBUG:
-        print(f"\nОпорные точки (старые):")
-        print(f"  small_attach1: {small_attach1}")
-        print(f"  large_attach1: {large_attach1}")
-        print(f"  small_attach2: {small_attach2}")
-        print(f"  large_attach2: {large_attach2}")
 
     # ---------- ПОСТРОЕНИЕ ПЕРВОЙ КРИВОЙ (line1) ----------
     path_array = np.array(path_vertices)
-    use_spline = (len(path_array) >= 4)
-
+    use_spline = (len(path_array) >= 3)
     if use_spline:
-        # Первая кривая - сплайн по дуге
-        tck, u = splprep(path_array.T, s=0, k=3)
+        k = min(3, len(path_array) - 1)  # 2 для 3 точек, 3 для 4+ точек
+        tck, u = splprep(path_array.T, s=0, k=k)
         u_new = np.linspace(0, 1, 200)
         line1_curve = np.column_stack(splev(u_new, tck))
     else:
-        # Прямая линия между small_attach1 и large_attach1
         line1_curve = np.array([small_attach1, large_attach1])
 
-    # ---------- НОВОЕ ПОСТРОЕНИЕ ВТОРОЙ КРИВОЙ (line2) с фиксированными концами ----------
-    # 1. Определяем точные концы на рёбрах
-    small_edge_dir = small_end - small_start
-    small_edge_len = np.linalg.norm(small_edge_dir)
+    # ---------- ОРИГИНАЛЬНЫЙ АЛГОРИТМ ПОСТРОЕНИЯ ВТОРОЙ КРИВОЙ (line2) ----------
     small_edge_dir_norm = small_edge_dir / small_edge_len
     large_edge_dir_norm = large_vec / np.linalg.norm(large_vec)
 
-    # Проекции на прямые (параметры t)
     vec_small = small_attach2 - small_start
     t_small = np.dot(vec_small, small_edge_dir_norm) / small_edge_len
     t_small = np.clip(t_small, 0.0, 1.0)
@@ -308,38 +310,22 @@ def build_two_lines(vertices: List[Tuple[float, float]],
     t_large = np.clip(t_large, 0.0, 1.0)
     P_end = large_p + t_large * large_vec
 
-    if DEBUG:
-        print(f"\nНОВЫЕ КОНЦЫ ДЛЯ LINE2 (проекции на рёбра, обрезанные):")
-        print(f"  P_start (на малом ребре): {P_start}")
-        print(f"  P_end   (на большом ребре): {P_end}")
-
-    # 2. Строим line2 с помощью гомотетии относительно точки пересечения рёбер
-    # Находим точку пересечения прямых, содержащих рёбра
+    # 2. Строим line2 с помощью гомотетии
     inter_edges, _ = line_intersection(small_start, small_edge_dir, large_p, large_vec)
+
     if inter_edges is not None:
-        # Вычисляем масштабные коэффициенты для концов line1 и line2
-        # Расстояние от центра гомотетии до точек
         def dist_from_center(pt):
             return np.linalg.norm(pt - inter_edges)
 
-        d1_start = dist_from_center(small_attach1)
-        d1_end = dist_from_center(large_attach1)
-        d2_start = dist_from_center(P_start)
-        d2_end = dist_from_center(P_end)
-
-        # Избегаем деления на ноль
-        if d1_start > 1e-6 and d1_end > 1e-6:
-            scale_start = d2_start / d1_start
-            scale_end = d2_end / d1_end
+        if dist_from_center(small_attach1) > 1e-6 and dist_from_center(large_attach1) > 1e-6:
+            scale_start = dist_from_center(P_start) / dist_from_center(small_attach1)
+            scale_end = dist_from_center(P_end) / dist_from_center(large_attach1)
         else:
             scale_start = scale_end = 1.0
     else:
-        # Рёбра параллельны — используем параллельный перенос
-        inter_edges = None
         scale_start = scale_end = 1.0
 
     if use_spline:
-        # Генерируем точки первой кривой
         num_samples = 100
         t_samples = np.linspace(0, 1, num_samples)
         points_line1 = np.column_stack(splev(t_samples, tck))
@@ -348,11 +334,9 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         for i, t in enumerate(t_samples):
             p1 = points_line1[i]
             if inter_edges is not None:
-                # Гомотетия с линейно интерполированным масштабом
                 scale = scale_start * (1 - t) + scale_end * t
                 p2 = inter_edges + scale * (p1 - inter_edges)
             else:
-                # Параллельный перенос (линейная интерполяция смещения)
                 delta_start = P_start - small_attach1
                 delta_end = P_end - large_attach1
                 delta = delta_start * (1 - t) + delta_end * t
@@ -360,34 +344,16 @@ def build_two_lines(vertices: List[Tuple[float, float]],
             line2_points.append(p2)
         line2_curve = np.array(line2_points)
     else:
-        # Прямые линии
-        if inter_edges is not None:
-            # Гомотетия для концов отрезка
-            scale_start = dist_from_center(P_start) / dist_from_center(small_attach1)
-            scale_end = dist_from_center(P_end) / dist_from_center(large_attach1)
-            # Для промежуточных точек можно линейно интерполировать масштаб, но у нас всего две точки
-            # Поэтому строим прямую между P_start и P_end
-            line2_curve = np.array([P_start, P_end])
-        else:
-            line2_curve = np.array([P_start, P_end])
+        line2_curve = np.array([P_start, P_end])
 
-    # ---------- ПОСТРОЕНИЕ МНОГОУГОЛЬНИКА ----------
+    # ---------- МНОГОУГОЛЬНИК ТОЧНО МЕЖДУ КРИВЫМИ ----------
     if use_spline:
-        poly_points = [tuple(small_attach1)]
-        poly_points.extend([tuple(p) for p in line1_curve])
-        poly_points.append(tuple(large_attach1))
-        poly_points.append(tuple(P_end))
-        poly_points.extend([tuple(p) for p in reversed(line2_curve)])
-        poly_points.append(tuple(P_start))
-        if not np.allclose(poly_points[0], poly_points[-1], atol=1e-6):
-            poly_points.append(poly_points[0])
-
-        polygon = poly_points   # <-- ИСПРАВЛЕНО: присваиваем переменной polygon
+        keep_curve = np.vstack((line1_curve, line2_curve[::-1]))
+        keep_curve = np.vstack((keep_curve, keep_curve[0]))
+        polygon = [tuple(p) for p in keep_curve]
 
         if DEBUG:
-            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(polygon)} точек) построен.")
-            print(f"ВНУТРЕННЯЯ КРИВАЯ (line1) содержит {len(line1_curve)} точек.")
-            print(f"ВНЕШНЯЯ КРИВАЯ (line2) содержит {len(line2_curve)} точек.")
+            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(polygon)} точек) — ТОЧНО МЕЖДУ КРИВЫМИ")
     else:
         poly_cand1 = [small_attach1, large_attach1, P_end, P_start]
         poly_cand2 = [small_attach1, P_start, P_end, large_attach1]
@@ -396,8 +362,7 @@ def build_two_lines(vertices: List[Tuple[float, float]],
 
         chosen_polygon_list = poly_cand1
         for cand in [poly_cand1, poly_cand2]:
-            poly_closed = cand + [cand[0]] if not np.allclose(np.asarray(cand[0]), np.asarray(cand[-1]),
-                                                              atol=1e-6) else cand
+            poly_closed = cand + [cand[0]] if not np.allclose(np.asarray(cand[0]), np.asarray(cand[-1]), atol=1e-6) else cand
             if point_in_polygon(tuple(mid_strip), poly_closed):
                 chosen_polygon_list = cand
                 break
@@ -406,13 +371,11 @@ def build_two_lines(vertices: List[Tuple[float, float]],
         if not np.allclose(np.asarray(polygon[0]), np.asarray(polygon[-1]), atol=1e-6):
             polygon.append(polygon[0])
 
-        if DEBUG:
-            print("\nНедостаточно точек для сплайна (менее 4). Используются прямые.")
-            print(f"ВНУТРЕННЯЯ ПРЯМАЯ (line1): {small_attach1} → {large_attach1}")
-            print(f"ВНЕШНЯЯ ПРЯМАЯ (line2): {P_start} → {P_end}")
+    if DEBUG:
+        print(f"ВНУТРЕННЯЯ КРИВАЯ (line1) содержит {len(line1_curve)} точек.")
+        print(f"ВНЕШНЯЯ КРИВАЯ (line2) содержит {len(line2_curve)} точек.")
 
     return line1_curve, line2_curve, polygon
-# ------------------------------------------------------------
 # ВЕРНУТЫЕ ОРИГИНАЛЬНЫЕ ФУНКЦИИ ОТРИСОВКИ (точно как в вашем первом файле)
 # ------------------------------------------------------------
 def visualize_result_with_lines(original_sp: Dict[str, Any],
@@ -489,7 +452,7 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
     ax1.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
     poly_array = np.array(polygon)
     ax1.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow', label='Keep polygon')
-    ax1.plot(poly_array[:, 0], poly_array[:, 1], 'orange', linewidth=1, alpha=0.5)
+
 
     for nid, verts in neighbor_boundaries.items():
         poly = np.array(verts + [verts[0]])
@@ -523,7 +486,6 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
     ax2.plot(line1[:, 0], line1[:, 1], 'r-', linewidth=2, alpha=0.8, label='Inner line')
     ax2.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
     ax2.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow')
-    ax2.plot(poly_array[:, 0], poly_array[:, 1], 'orange', linewidth=1, alpha=0.5)
 
     ax2.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1, s=80, marker='*', label='Center', zorder=5)
     ax2.annotate(str(original_sp["id"]), xy=center, xytext=(5, 5), textcoords='offset points',
@@ -577,7 +539,6 @@ def visualize_result_with_lines(original_sp: Dict[str, Any],
         if first_neighbor_polygon is not None:
             neighbor_poly_array = np.array(first_neighbor_polygon)
             ax3.fill(neighbor_poly_array[:, 0], neighbor_poly_array[:, 1], alpha=0.2, color='orange')
-            ax3.plot(neighbor_poly_array[:, 0], neighbor_poly_array[:, 1], 'orange', linewidth=1, alpha=0.5)
 
         if first_neighbor_center is not None:
             ax3.scatter(first_neighbor_center[0], first_neighbor_center[1], c='orange', edgecolors='black',
@@ -673,7 +634,6 @@ def visualize_intermediate_with_lines(original_sp: Dict[str, Any],
     plt.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
     poly_array = np.array(polygon)
     plt.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow', label='Keep polygon')
-    plt.plot(poly_array[:, 0], poly_array[:, 1], 'orange', linewidth=1, alpha=0.5)
 
     plt.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1, s=100,
                 marker='*', label=f'Center SP {original_sp["id"]}', zorder=5)
@@ -723,7 +683,16 @@ def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
     simplified_boundary = simplify_boundary(ordered_boundary)
     vertices = filter_close_points(simplified_boundary)
 
-    line1, line2, polygon = build_two_lines(vertices, offset_distance)
+    # Получаем кривые (алгоритм построения НЕ ТРОГАЕМ)
+    line1_curve, line2_curve, polygon = build_two_lines(vertices, offset_distance)
+
+    # === НОВЫЙ keep_region: только полоса МЕЖДУ двумя кривыми ===
+    if len(line1_curve) >= 4 and len(line2_curve) >= 4:
+        keep_curve = np.vstack((line1_curve, line2_curve[::-1]))
+        keep_curve = np.vstack((keep_curve, keep_curve[0]))
+        keep_polygon = [tuple(p) for p in keep_curve]
+    else:
+        keep_polygon = polygon
 
     all_points = [(p["x"], p["y"]) for p in sp["all_points"]]
     neighbors = sp["neighbors"]
@@ -733,19 +702,32 @@ def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
         processed_ids = set()
 
     available_neighbors = [nid for nid in neighbors if nid not in processed_ids]
-    neighbor_centers = {nid: (sp_dict[nid]["center"]["x"], sp_dict[nid]["center"]["y"])
-                        for nid in available_neighbors if nid in sp_dict}
+
+    # --- НОВЫЙ БЛОК: строим kd-деревья для точек каждого соседа ---
+    from scipy.spatial import cKDTree
+    neighbor_trees = {}
+    for nid in available_neighbors:
+        if nid not in sp_dict:
+            continue
+        neighbor_sp = sp_dict[nid]
+        pts = [(p["x"], p["y"]) for p in neighbor_sp["all_points"]]
+        if pts:
+            neighbor_trees[nid] = cKDTree(pts)
+        else:
+            # если у соседа нет точек, использовать его центр как fallback
+            center = (neighbor_sp["center"]["x"], neighbor_sp["center"]["y"])
+            neighbor_trees[nid] = cKDTree([center])
 
     reassigned = {superpixel_id: []}
 
     for pt in all_points:
-        if point_in_polygon(pt, polygon):
+        if point_in_polygon(pt, keep_polygon):
             reassigned.setdefault(superpixel_id, []).append(pt)
         else:
             best_id = None
             best_dist = float('inf')
-            for nid, c in neighbor_centers.items():
-                dist = np.linalg.norm(np.array(pt) - np.array(c))
+            for nid, tree in neighbor_trees.items():
+                dist, _ = tree.query(pt)   # расстояние до ближайшей точки соседа
                 if dist < best_dist:
                     best_dist = dist
                     best_id = nid
@@ -754,9 +736,20 @@ def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
             else:
                 reassigned.setdefault(superpixel_id, []).append(pt)
 
-    reassigned['_lines'] = (line1, line2, polygon, vertices)
+    reassigned['_lines'] = (line1_curve, line2_curve, polygon, vertices)
     return reassigned
 
+def recompute_boundary_from_points(sp: Dict[str, Any]) -> List[Tuple[float, float]]:
+    """Пересчитывает границу суперпикселя по его точкам (выпуклая оболочка + RDP)."""
+    points = [(p["x"], p["y"]) for p in sp["all_points"]]
+    if len(points) < 3:
+        return []  # недостаточно точек для построения границы
+    hull = ConvexHull(points)
+    hull_points = [points[i] for i in hull.vertices]   # порядок обхода уже задан
+    # упрощаем и фильтруем как в оригинале
+    simplified = simplify_boundary(hull_points)
+    filtered = filter_close_points(simplified)
+    return filtered
 
 # ------------------------------------------------------------
 # Основная функция (без изменений)
@@ -797,7 +790,12 @@ if __name__ == "__main__":
         if sp_updated:
             kept_points = reassigned_first.get(sp_id, [])
             sp_updated["all_points"] = [{"x": p[0], "y": p[1]} for p in kept_points]
+            # Пересчитываем границу для sp_id (хотя он больше не будет обрабатываться, но для полноты)
+            new_boundary = recompute_boundary_from_points(sp_updated)
+            if new_boundary:
+                sp_updated["boundary_points"] = [{"x": p[0], "y": p[1]} for p in new_boundary]
 
+        # Обновляем данные для соседей, получивших точки
         for neighbor_id, points in reassigned_first.items():
             if neighbor_id != sp_id and neighbor_id != '_lines':
                 neighbor_sp = next((s for s in updated_data["superpixels"] if s["id"] == neighbor_id), None)
@@ -806,6 +804,10 @@ if __name__ == "__main__":
                     new_points = [(p[0], p[1]) for p in points]
                     all_points = existing_points + new_points
                     neighbor_sp["all_points"] = [{"x": p[0], "y": p[1]} for p in all_points]
+                    #пересчитываем границу для соседа
+                    new_boundary_neighbor = recompute_boundary_from_points(neighbor_sp)
+                    if new_boundary_neighbor:
+                        neighbor_sp["boundary_points"] = [{"x": p[0], "y": p[1]} for p in new_boundary_neighbor]
 
         print(f"\n--- Этап 2: Обработка суперпикселя {first_neighbor_id} ---")
         processed_ids = {sp_id}
