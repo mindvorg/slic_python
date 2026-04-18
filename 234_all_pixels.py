@@ -317,11 +317,23 @@ def build_two_lines(vertices: List[Tuple[float, float]],
 
     # ---------- ПОСТРОЕНИЕ ПЕРВОЙ КРИВОЙ (line1) ----------
     path_array = np.array(path_vertices)
-
+    # Вычисляем характерный размер суперпикселя для epsilon
+    # Можно взять среднее расстояние между соседними вершинами или step
+    if len(path_vertices) >= 3:
+        # Грубая оценка размера суперпикселя
+        bbox_size = max(np.ptp(path_array[:, 0]), np.ptp(path_array[:, 1]))
+        epsilon = bbox_size * 0.15  # 15% от размера — сильно упрощает
+        simplified = rdp(path_array, epsilon=epsilon)
+        if len(simplified) < 2:
+            simplified = np.array([path_vertices[0], path_vertices[-1]])
+        path_array = simplified
+        print(f"Упрощение пути: {len(path_vertices)} → {len(path_array)} точек, epsilon={epsilon:.2f}")
     use_spline = (len(path_array) >= 3)
     if use_spline:
-        k = min(3, len(path_array) - 1)  # 2 для 3 точек, 3 для 4+ точек
-        tck, u = splprep(path_array.T, s=0, k=k)
+        k = min(3, len(path_array) - 1)  # степень сплайна
+        # s – сглаживание; чем больше, тем плавнее кривая (меньше изгибов)
+        smoothing = len(path_array) * 1.0
+        tck, u = splprep(path_array.T, s=smoothing, k=k)
         u_new = np.linspace(0, 1, 200)
         line1_curve = np.column_stack(splev(u_new, tck))
     else:
