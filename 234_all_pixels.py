@@ -164,24 +164,30 @@ def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir:
     return line_point + t * line_dir
 
 
-def build_two_lines(vertices: List[Tuple[float, float]],
-                    offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
+def build_two_lines(
+        vertices: List[Tuple[float, float]],
+        offset_distance: float = 2.0,
+        cap_style: str = 'round',  # 'round', 'flat', 'sharp'
+        roundness: float = 1.0  # при cap_style='round': 0 = плоские, 1 = полный полукруг, >1 – вытянутые
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
     """
     Строит мазок на основе главной оси (PCA) суперпикселя.
-    Возвращает две кривые (line1 – внутренняя, line2 – внешняя) и многоугольник между ними.
-    Мазок имеет форму прямоугольника с закруглёнными концами (капсулы).
 
     Параметры:
         vertices: список точек границы суперпикселя
-        offset_distance: не используется (оставлен для совместимости), ширина определяется разбросом точек.
+        offset_distance: минимальная ширина (если автоширина даёт <1.0)
+        cap_style: 'flat' – прямоугольник,
+                   'round' – закруглённые концы (капсула),
+                   'sharp' – острые концы (треугольные завершения)
+        roundness: для 'round' – доля полукруга (0=плоский, 1=полуокружность)
     """
     if DEBUG:
         print("\n" + "=" * 60)
-        print("ПОСТРОЕНИЕ ЛИНИЙ НА ОСНОВЕ PCA (ПРЯМОУГОЛЬНИК С ЗАКРУГЛЕНИЯМИ)")
+        print(f"ПОСТРОЕНИЕ ЛИНИЙ НА ОСНОВЕ PCA (cap_style={cap_style}, roundness={roundness})")
         print("=" * 60)
 
+    # Вырожденный случай
     if len(vertices) < 3:
-        # Вырожденный случай – просто толстая линия вдоль направления
         if DEBUG:
             print("Слишком мало вершин → создаём прямую полосу по главной оси")
         main_dir = get_principal_direction(vertices)
@@ -198,393 +204,101 @@ def build_two_lines(vertices: List[Tuple[float, float]],
     pts = np.array(vertices)
     center = np.mean(pts, axis=0)
 
-    # 1. Вычисляем главную ось (PCA) через SVD
-    main_dir = get_principal_direction(vertices)  # единичный вектор
-    perp = np.array([-main_dir[1], main_dir[0]])  # перпендикуляр
+    # Главная ось (PCA)
+    main_dir = get_principal_direction(vertices)
+    perp = np.array([-main_dir[1], main_dir[0]])
 
-    # 2. Находим проекции всех точек на главную ось и перпендикуляр
+    # Проекции точек
     proj_main = np.dot(pts - center, main_dir)
     proj_perp = np.dot(pts - center, perp)
 
     t_min, t_max = np.min(proj_main), np.max(proj_main)
     w_min, w_max = np.min(proj_perp), np.max(proj_perp)
 
-    # 3. Определяем ширину мазка – можно взять размах по перпендикуляру,
-    #    либо фиксированную (например, 2 * offset_distance).
-    #    Здесь используем размах, чтобы мазок покрывал область суперпикселя.
+    # Ширина (авто или fallback)
     width = (w_max - w_min)
     if width < 1.0:
         width = offset_distance * 1.5
     half_width = width / 2.0
 
-    # 4. Строим центральную линию (отрезок от t_min до t_max)
+    # Центральная линия
     p_start = center + t_min * main_dir
     p_end = center + t_max * main_dir
 
-    # 5. Формируем две основные линии (inner и outer) – на самом деле они симметричны
+    # Базовые прямые (внутренняя и внешняя стороны)
     inner_line = np.array([p_start + half_width * perp,
                            p_end + half_width * perp])
     outer_line = np.array([p_start - half_width * perp,
                            p_end - half_width * perp])
 
-    # 6. Добавляем закруглённые концы (полуокружности)
-    num_arc = 30  # количество точек на дуге
-    # Дуга в начале (p_start)
-    angles1 = np.linspace(np.pi / 2, 3 * np.pi / 2, num_arc)  # от +perp до -perp через main_dir?
-    # Уточним: хотим дугу, соединяющую inner_line[0] и outer_line[0]
-    # inner_line[0] = p_start + half_width*perp
-    # outer_line[0] = p_start - half_width*perp
-    # Параметрическое уравнение окружности: p_start + half_width*(cosθ * perp + sinθ * main_dir)
-    # Чтобы дуга шла от inner к outer против часовой стрелки:
-    # inner соответствует θ = π/2 (perp), outer соответствует θ = -π/2 (-perp)
-    # Пройдём от π/2 до 3π/2 через π (направление -main_dir)
-    theta_start = np.linspace(np.pi / 2, 3 * np.pi / 2, num_arc)
-    arc_start = p_start + half_width * (np.cos(theta_start)[:, None] * perp +
-                                        np.sin(theta_start)[:, None] * main_dir)
+    # Обработка стиля окончаний
+    if cap_style == 'flat':
+        # Прямоугольник без закруглений
+        line1_curve = inner_line
+        line2_curve = outer_line
+        polygon_points = np.vstack([inner_line, outer_line[::-1]])
 
-    # Дуга в конце (p_end): соединяет outer_line[1] и inner_line[1]
-    # outer_line[1] = p_end - half_width*perp (θ = -π/2 = 3π/2)
-    # inner_line[1] = p_end + half_width*perp (θ = π/2)
-    # Пройдём от 3π/2 до 5π/2 (или от -π/2 до π/2)
-    theta_end = np.linspace(-np.pi / 2, np.pi / 2, num_arc)
-    arc_end = p_end + half_width * (np.cos(theta_end)[:, None] * perp +
-                                    np.sin(theta_end)[:, None] * main_dir)
+    elif cap_style == 'sharp':
+        # Острые концы: сходятся в точках на оси
+        tip_start = p_start - half_width * main_dir  # можно и просто p_start
+        tip_end = p_end + half_width * main_dir
 
-    # 7. Формируем непрерывные кривые line1 и line2
-    # line1 (внутренняя) – пойдёт по верхней дуге, затем по inner_line, затем по нижней дуге?
-    # Для заливки нам нужны две замкнутые или отдельные кривые.
-    # Удобно определить line1 как одну непрерывную ломаную:
-    # arc_start (от inner до outer) + outer_line (от p_start до p_end) + arc_end (от outer до inner) + inner_line[::-1]
-    # Но в оригинале line1 и line2 – это две отдельные линии, и polygon строится как объединение.
-    # Мы сохраним логику: line1_curve = верхняя половина капсулы, line2_curve = нижняя.
-    # Визуально:
-    # line1: inner_line[0] -> inner_line[1] (прямая) + дуга в конце (верхняя половина) + дуга в начале (верхняя половина)?
-    # Проще сделать:
-    # line1_curve = arc_start_upper + inner_line + arc_end_upper_reversed?
-    # Предлагаю:
-    # line1: начинается в inner_line[0], идёт по inner_line до inner_line[1],
-    #        затем по верхней половине дуги конца (от inner_line[1] к outer_line[1]),
-    #        затем по outer_line обратно к началу,
-    #        затем по верхней половине дуги начала обратно к inner_line[0].
-    # Это даст замкнутую фигуру. Но нам нужно именно две отдельные кривые для отрисовки.
+        line1_curve = np.vstack([tip_start, inner_line, tip_end])
+        line2_curve = np.vstack([tip_start, outer_line, tip_end])
 
-    # Вместо усложнения сделаем просто:
-    # line1_curve – объединение: [arc_start (вся), inner_line, arc_end (вся)]
-    # line2_curve – то же самое, но с outer_line? Тогда они будут пересекаться.
-    # Лучше определить polygon напрямую, а line1/line2 оставить для отображения как две половинки.
-    # Для визуализации можно отдать:
-    line1_curve = np.vstack([arc_start, inner_line, arc_end])
-    line2_curve = np.vstack([arc_start[::-1], outer_line, arc_end[::-1]])
+        polygon_points = np.vstack([
+            tip_start,
+            inner_line,
+            tip_end,
+            outer_line[::-1]
+        ])
 
-    # Формируем многоугольник для заливки – полная капсула
-    polygon_points = np.vstack([
-        arc_start,  # дуга начала (от inner к outer)
-        outer_line,  # внешняя прямая
-        arc_end,  # дуга конца (от outer к inner)
-        inner_line[::-1]  # внутренняя прямая в обратном порядке
-    ])
+    else:  # 'round' (по умолчанию)
+        # Радиус закругления (может быть меньше половины ширины)
+        arc_radius = half_width * roundness
+
+        # Дуга в начале
+        theta_start = np.linspace(np.pi / 2, 3 * np.pi / 2, max(10, int(20 * roundness)))
+        arc_start = p_start + arc_radius * (np.cos(theta_start)[:, None] * perp +
+                                            np.sin(theta_start)[:, None] * main_dir)
+
+        # Дуга в конце
+        theta_end = np.linspace(-np.pi / 2, np.pi / 2, max(10, int(20 * roundness)))
+        arc_end = p_end + arc_radius * (np.cos(theta_end)[:, None] * perp +
+                                        np.sin(theta_end)[:, None] * main_dir)
+
+        # Если roundness < 1.0, остаются прямые участки между дугами и линиями
+        if roundness < 1.0:
+            # Укороченные прямые
+            inner_straight = np.array([p_start + half_width * perp,
+                                       p_end + half_width * perp])
+            outer_straight = np.array([p_start - half_width * perp,
+                                       p_end - half_width * perp])
+        else:
+            inner_straight = inner_line
+            outer_straight = outer_line
+
+        line1_curve = np.vstack([arc_start, inner_straight, arc_end])
+        line2_curve = np.vstack([arc_start[::-1], outer_straight, arc_end[::-1]])
+
+        polygon_points = np.vstack([
+            arc_start,
+            outer_straight,
+            arc_end,
+            inner_straight[::-1]
+        ])
+
+    # Замыкаем полигон
     polygon = [tuple(p) for p in polygon_points]
-    polygon.append(polygon[0])  # замкнуть
+    polygon.append(polygon[0])
 
     if DEBUG:
         print(f"Главная ось: {main_dir}, ширина: {width:.2f}")
         print(f"Длина мазка: {np.linalg.norm(p_end - p_start):.2f}")
-        print(f"Кривая 1 (inner+arcs): {len(line1_curve)} точек")
-        print(f"Кривая 2 (outer+arcs): {len(line2_curve)} точек")
-        print(f"Многоугольник: {len(polygon)} точек")
+        print(f"line1_curve: {len(line1_curve)} точек, line2_curve: {len(line2_curve)} точек")
+        print(f"Полигон: {len(polygon)} точек")
 
     return line1_curve, line2_curve, polygon
-
-# ВЕРНУТЫЕ ОРИГИНАЛЬНЫЕ ФУНКЦИИ ОТРИСОВКИ (точно как в вашем первом файле)
-# ------------------------------------------------------------
-def visualize_result_with_lines(original_sp: Dict[str, Any],
-                                reassigned: Dict[int, List[Tuple[float, float]]],
-                                neighbor_reassigned: Dict[int, List[Tuple[float, float]]] = None,
-                                data: Dict[str, Any] = None,
-                                offset_distance: float = 2.0):
-    """Оригинальная трёхоконная визуализация (Этап 1 → Этап 2 → Этап 3)"""
-    # Исходный суперпиксель
-    orig_boundary = [(p["x"], p["y"]) for p in original_sp["boundary_points"]]
-    orig_ordered = order_boundary_points(orig_boundary)
-    orig_vertices = simplify_boundary(orig_ordered)
-    orig_vertices = filter_close_points(orig_vertices)
-
-    line1, line2, polygon = build_two_lines(orig_vertices, offset_distance)
-
-    neighbor_ids = original_sp["neighbors"]
-    neighbor_boundaries = {}
-    neighbor_centers = {}
-    for nid in neighbor_ids:
-        sp = next((s for s in data["superpixels"] if s["id"] == nid), None)
-        if sp:
-            bound = [(p["x"], p["y"]) for p in sp["boundary_points"]]
-            bound_ord = order_boundary_points(bound)
-            bound_simp = simplify_boundary(bound_ord)
-            neighbor_boundaries[nid] = filter_close_points(bound_simp)
-            neighbor_centers[nid] = (sp["center"]["x"], sp["center"]["y"])
-
-    center = (original_sp["center"]["x"], original_sp["center"]["y"])
-
-    first_neighbor_id = neighbor_ids[0] if neighbor_ids else None
-
-    # Первый сосед
-    first_neighbor_sp = None
-    first_neighbor_vertices = None
-    first_neighbor_line1 = None
-    first_neighbor_line2 = None
-    first_neighbor_polygon = None
-    first_neighbor_center = None
-    first_neighbor_points = []
-
-    if first_neighbor_id and data:
-        first_neighbor_sp = next((s for s in data["superpixels"] if s["id"] == first_neighbor_id), None)
-        if first_neighbor_sp:
-            first_neighbor_bound = [(p["x"], p["y"]) for p in first_neighbor_sp["boundary_points"]]
-            first_neighbor_ordered = order_boundary_points(first_neighbor_bound)
-            first_neighbor_simplified = simplify_boundary(first_neighbor_ordered)
-            first_neighbor_vertices = filter_close_points(first_neighbor_simplified)
-
-            first_neighbor_line1, first_neighbor_line2, first_neighbor_polygon = build_two_lines(
-                first_neighbor_vertices, offset_distance)
-            first_neighbor_center = (first_neighbor_sp["center"]["x"], first_neighbor_sp["center"]["y"])
-
-    # Объединяем результаты
-    all_reassigned = {}
-    if reassigned:
-        for k, v in reassigned.items():
-            if k != '_lines':
-                all_reassigned.setdefault(k, []).extend(v)
-    if neighbor_reassigned:
-        for k, v in neighbor_reassigned.items():
-            if k != '_lines':
-                all_reassigned.setdefault(k, []).extend(v)
-                if k == first_neighbor_id:
-                    first_neighbor_points.extend(v)
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-
-    # График 1: Исходное состояние
-    ax1 = axes[0]
-    poly_orig = np.array(orig_vertices + [orig_vertices[0]])
-    ax1.plot(poly_orig[:, 0], poly_orig[:, 1], 'b-', linewidth=2, label=f'SP {original_sp["id"]}')
-    ax1.plot(line1[:, 0], line1[:, 1], 'r-', linewidth=2, alpha=0.8, label='Inner line')
-    ax1.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
-    poly_array = np.array(polygon)
-    ax1.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow', label='Keep polygon')
-
-
-    for nid, verts in neighbor_boundaries.items():
-        poly = np.array(verts + [verts[0]])
-        ax1.plot(poly[:, 0], poly[:, 1], 'gray', linestyle='--', alpha=0.5,
-                 label=f'Neighbor {nid}' if nid == neighbor_ids[0] else "")
-
-    all_pts = np.array([(p["x"], p["y"]) for p in original_sp["all_points"]])
-    ax1.scatter(all_pts[:, 0], all_pts[:, 1], c='blue', s=5, alpha=0.5)
-    ax1.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1, s=80, marker='*', label='Center', zorder=5)
-    ax1.annotate(str(original_sp["id"]), xy=center, xytext=(5, 5), textcoords='offset points',
-                 fontsize=10, fontweight='bold', color='red',
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="red", alpha=0.7))
-
-    for nid, ncenter in neighbor_centers.items():
-        ax1.scatter(ncenter[0], ncenter[1], c='green', edgecolors='black', linewidth=0.5, s=50, marker='o', alpha=0.7)
-        ax1.annotate(str(nid), xy=ncenter, xytext=(5, 5), textcoords='offset points',
-                     fontsize=8, color='green',
-                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="green", alpha=0.6))
-
-    ax1.set_title("Этап 1: Исходное состояние\n(Жёлтый многоугольник - сохраняемые точки)")
-    ax1.axis('equal')
-    ax1.legend(loc='upper right', fontsize=8)
-
-    # График 2: После обработки выбранного суперпикселя
-    ax2 = axes[1]
-    for nid, verts in neighbor_boundaries.items():
-        poly = np.array(verts + [verts[0]])
-        ax2.plot(poly[:, 0], poly[:, 1], 'gray', linestyle='--', alpha=0.5, linewidth=1)
-
-    ax2.plot(poly_orig[:, 0], poly_orig[:, 1], 'b--', linewidth=1.5, alpha=0.5, label=f'Original boundary SP {original_sp["id"]}')
-    ax2.plot(line1[:, 0], line1[:, 1], 'r-', linewidth=2, alpha=0.8, label='Inner line')
-    ax2.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
-    ax2.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow')
-
-    ax2.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1, s=80, marker='*', label='Center', zorder=5)
-    ax2.annotate(str(original_sp["id"]), xy=center, xytext=(5, 5), textcoords='offset points',
-                 fontsize=10, fontweight='bold', color='red',
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="red", alpha=0.7))
-
-    for nid, ncenter in neighbor_centers.items():
-        ax2.scatter(ncenter[0], ncenter[1], c='green', edgecolors='black', linewidth=0.5, s=50, marker='o', alpha=0.7)
-        ax2.annotate(str(nid), xy=ncenter, xytext=(5, 5), textcoords='offset points',
-                     fontsize=8, color='green',
-                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="green", alpha=0.6))
-
-    try:
-        cmap = plt.colormaps['tab10']
-    except AttributeError:
-        cmap = plt.cm.get_cmap('tab10')
-    unique_ids = [k for k in reassigned.keys() if k != '_lines']
-    colors = [cmap(i % cmap.N) for i in range(len(unique_ids))]
-
-    for idx, sp_id in enumerate(unique_ids):
-        points = reassigned[sp_id]
-        if points:
-            pts = np.array(points)
-            ax2.scatter(pts[:, 0], pts[:, 1], c=[colors[idx]], s=8, alpha=0.8, label=f'SP {sp_id}', edgecolors='none')
-
-    ax2.set_title(f"Этап 2: После обработки SP {original_sp['id']}")
-    ax2.axis('equal')
-    ax2.legend(loc='upper right', fontsize=8, markerscale=1.5)
-
-    # График 3: После обработки первого соседа
-    ax3 = axes[2]
-    all_centers = {s["id"]: (s["center"]["x"], s["center"]["y"]) for s in data["superpixels"]}
-
-    for nid, verts in neighbor_boundaries.items():
-        if nid != first_neighbor_id:
-            poly = np.array(verts + [verts[0]])
-            ax3.plot(poly[:, 0], poly[:, 1], 'gray', linestyle='--', alpha=0.3, linewidth=1)
-
-    ax3.plot(poly_orig[:, 0], poly_orig[:, 1], 'b--', linewidth=1.5, alpha=0.5, label=f'Boundary SP {original_sp["id"]}')
-    ax3.plot(line1[:, 0], line1[:, 1], 'r-', linewidth=1.5, alpha=0.5)
-    ax3.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=1.5, alpha=0.5)
-
-    if first_neighbor_vertices is not None:
-        poly_neighbor = np.array(first_neighbor_vertices + [first_neighbor_vertices[0]])
-        ax3.plot(poly_neighbor[:, 0], poly_neighbor[:, 1], 'orange', linewidth=2, alpha=0.8, label=f'Boundary SP {first_neighbor_id}')
-
-        if first_neighbor_line1 is not None and first_neighbor_line2 is not None:
-            ax3.plot(first_neighbor_line1[:, 0], first_neighbor_line1[:, 1], 'orange', linewidth=2, alpha=0.8, linestyle='-', label=f'Inner line SP {first_neighbor_id}')
-            ax3.plot(first_neighbor_line2[:, 0], first_neighbor_line2[:, 1], 'orange', linewidth=2, alpha=0.8, linestyle='--', label=f'Outer line SP {first_neighbor_id}')
-
-        if first_neighbor_polygon is not None:
-            neighbor_poly_array = np.array(first_neighbor_polygon)
-            ax3.fill(neighbor_poly_array[:, 0], neighbor_poly_array[:, 1], alpha=0.2, color='orange')
-
-        if first_neighbor_center is not None:
-            ax3.scatter(first_neighbor_center[0], first_neighbor_center[1], c='orange', edgecolors='black',
-                        linewidth=1.5, s=100, marker='*', label=f'Center SP {first_neighbor_id}', zorder=5)
-            ax3.annotate(str(first_neighbor_id), xy=first_neighbor_center, xytext=(8, 8), textcoords='offset points',
-                         fontsize=11, fontweight='bold', color='orange',
-                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="orange", alpha=0.8))
-
-    ax3.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1.5, s=100,
-                marker='*', label=f'Center SP {original_sp["id"]}', zorder=5)
-    ax3.annotate(str(original_sp["id"]), xy=center, xytext=(8, 8), textcoords='offset points',
-                 fontsize=11, fontweight='bold', color='red',
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="red", alpha=0.8))
-
-    if first_neighbor_points:
-        pts = np.array(first_neighbor_points)
-        if first_neighbor_center:
-            center_np = np.array(first_neighbor_center)
-            angles = np.arctan2(pts[:, 1] - center_np[1], pts[:, 0] - center_np[0])
-            sorted_indices = np.argsort(angles)
-            sorted_pts = pts[sorted_indices]
-            sorted_pts = np.vstack([sorted_pts, sorted_pts[0]])
-            ax3.plot(sorted_pts[:, 0], sorted_pts[:, 1], 'orange', linewidth=2, alpha=0.8,
-                     label=f'Points connection SP {first_neighbor_id}')
-        ax3.scatter(pts[:, 0], pts[:, 1], c='orange', s=15, alpha=0.8, edgecolors='black', linewidth=0.5,
-                    label=f'Points SP {first_neighbor_id}')
-
-    other_ids = set(all_reassigned.keys()) - {original_sp["id"], first_neighbor_id}
-    for oid in other_ids:
-        if oid in all_centers:
-            oc = all_centers[oid]
-            ax3.scatter(oc[0], oc[1], c='gray', edgecolors='black', linewidth=0.5, s=40, marker='o', alpha=0.5)
-            ax3.annotate(str(oid), xy=oc, xytext=(5, 5), textcoords='offset points',
-                         fontsize=7, color='gray',
-                         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="gray", alpha=0.5))
-
-    unique_ids_final = list(all_reassigned.keys())
-    colors_final = [cmap(i % cmap.N) for i in range(len(unique_ids_final))]
-
-    for idx, sp_id in enumerate(unique_ids_final):
-        if sp_id == first_neighbor_id:
-            continue
-        points = all_reassigned[sp_id]
-        if points:
-            pts = np.array(points)
-            ax3.scatter(pts[:, 0], pts[:, 1], c=[colors_final[idx]], s=8, alpha=0.8,
-                        label=f'SP {sp_id}', edgecolors='none')
-
-    ax3.set_title(f"Этап 3: После обработки SP {first_neighbor_id}\n(Оранжевая линия - точки SP {first_neighbor_id})")
-    ax3.axis('equal')
-    ax3.legend(loc='upper right', fontsize=8, markerscale=1.5)
-
-    plt.tight_layout()
-    plt.show()
-
-
-def visualize_intermediate_with_lines(original_sp: Dict[str, Any],
-                                      reassigned: Dict[int, List[Tuple[float, float]]],
-                                      data: Dict[str, Any],
-                                      offset_distance: float = 2.0):
-    """Оригинальная промежуточная визуализация (одно окно)"""
-    orig_boundary = [(p["x"], p["y"]) for p in original_sp["boundary_points"]]
-    orig_ordered = order_boundary_points(orig_boundary)
-    orig_vertices = simplify_boundary(orig_ordered)
-    orig_vertices = filter_close_points(orig_vertices)
-
-    line1, line2, polygon = build_two_lines(orig_vertices, offset_distance)
-
-    neighbor_ids = original_sp["neighbors"]
-    neighbor_boundaries = {}
-    neighbor_centers = {}
-    for nid in neighbor_ids:
-        sp = next((s for s in data["superpixels"] if s["id"] == nid), None)
-        if sp:
-            bound = [(p["x"], p["y"]) for p in sp["boundary_points"]]
-            bound_ord = order_boundary_points(bound)
-            bound_simp = simplify_boundary(bound_ord)
-            neighbor_boundaries[nid] = filter_close_points(bound_simp)
-            neighbor_centers[nid] = (sp["center"]["x"], sp["center"]["y"])
-
-    center = (original_sp["center"]["x"], original_sp["center"]["y"])
-
-    plt.figure(figsize=(12, 10))
-
-    for nid, verts in neighbor_boundaries.items():
-        poly = np.array(verts + [verts[0]])
-        plt.plot(poly[:, 0], poly[:, 1], 'gray', linestyle='--', alpha=0.5, linewidth=1)
-
-    poly_orig = np.array(orig_vertices + [orig_vertices[0]])
-    plt.plot(poly_orig[:, 0], poly_orig[:, 1], 'b-', linewidth=2, alpha=0.7)
-
-    plt.plot(line1[:, 0], line1[:, 1], 'r-', linewidth=2, alpha=0.8, label='Inner line')
-    plt.plot(line2[:, 0], line2[:, 1], 'g-', linewidth=2, alpha=0.8, label='Outer line')
-    poly_array = np.array(polygon)
-    plt.fill(poly_array[:, 0], poly_array[:, 1], alpha=0.3, color='yellow', label='Keep polygon')
-
-    plt.scatter(center[0], center[1], c='red', edgecolors='black', linewidth=1, s=100,
-                marker='*', label=f'Center SP {original_sp["id"]}', zorder=5)
-    plt.annotate(str(original_sp["id"]), xy=center, xytext=(8, 8), textcoords='offset points',
-                 fontsize=12, fontweight='bold', color='red',
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="red", alpha=0.8))
-
-    for nid, ncenter in neighbor_centers.items():
-        plt.scatter(ncenter[0], ncenter[1], c='green', edgecolors='black', linewidth=0.5, s=60, marker='o', alpha=0.7)
-        plt.annotate(str(nid), xy=ncenter, xytext=(5, 5), textcoords='offset points',
-                     fontsize=9, color='green',
-                     bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="green", alpha=0.6))
-
-    try:
-        cmap = plt.colormaps['tab10']
-    except AttributeError:
-        cmap = plt.cm.get_cmap('tab10')
-    unique_ids = [k for k in reassigned.keys() if k != '_lines']
-    colors = [cmap(i % cmap.N) for i in range(len(unique_ids))]
-
-    for idx, sp_id in enumerate(unique_ids):
-        points = reassigned[sp_id]
-        if points:
-            pts = np.array(points)
-            plt.scatter(pts[:, 0], pts[:, 1], c=[colors[idx]], s=10, alpha=0.8,
-                        label=f'SP {sp_id}', edgecolors='none')
-
-    plt.title(f"Промежуточный этап: после обработки SP {original_sp['id']}\n(Жёлтый многоугольник - сохраняемые точки)")
-    plt.axis('equal')
-    plt.legend(markerscale=2)
-    plt.tight_layout()
-    plt.show()
 
 
 def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
@@ -618,26 +332,34 @@ def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
             continue
 
         line1, line2, polygon = build_two_lines(vertices, offset_distance)
+        # # Плоские концы
+        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='flat')
+        #
+        # # Острые концы
+        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='sharp')
+        #
+        # # Частичное закругление (сглаженные углы)
+        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='round', roundness=0.4)
 
         # 1. Заполнение мазка (полупрозрачный цвет суперпикселя)
         if len(line1) >= 2 and len(line2) >= 2:
             keep_curve = np.vstack((line1, line2[::-1]))
             keep_curve = np.vstack((keep_curve, keep_curve[0]))
             ax.fill(keep_curve[:, 0], keep_curve[:, 1],
-                    color=color, alpha=0.4, linewidth=0)
+                    color=color, alpha=1, linewidth=0)
 
         # 2. Тонкая граница исходного суперпикселя
-        poly = np.array(vertices + [vertices[0]])
-        ax.plot(poly[:, 0], poly[:, 1],
-                color=color, linewidth=1.0, alpha=0.7, linestyle='-')
-
-        # 3. Inner и Outer кривые (более яркие, но того же цвета)
-        if len(line1) > 1:
-            ax.plot(line1[:, 0], line1[:, 1],
-                    color=color, linewidth=2.0, alpha=0.9, linestyle='-')
-        if len(line2) > 1:
-            ax.plot(line2[:, 0], line2[:, 1],
-                    color=color, linewidth=2.0, alpha=0.9, linestyle='--')
+        # poly = np.array(vertices + [vertices[0]])
+        # ax.plot(poly[:, 0], poly[:, 1],
+        #         color=color, linewidth=1.0, alpha=0.7, linestyle='-')
+        #
+        # # 3. Inner и Outer кривые (более яркие, но того же цвета)
+        # if len(line1) > 1:
+        #     ax.plot(line1[:, 0], line1[:, 1],
+        #             color=color, linewidth=2.0, alpha=0.9, linestyle='-')
+        # if len(line2) > 1:
+        #     ax.plot(line2[:, 0], line2[:, 1],
+        #             color=color, linewidth=2.0, alpha=0.9, linestyle='--')
 
     ax.set_title("Итоговая имитация мазков прямоугольной кисти\n(цвета соответствуют исходным суперпикселям)",
                  fontsize=16, pad=20)
@@ -777,7 +499,7 @@ def fill_gaps_global(updated_data: Dict[str, Any], original_data: Dict[str, Any]
             if new_b:
                 sp["boundary_points"] = [{"x": float(p[0]), "y": float(p[1])} for p in new_b]
 if __name__ == "__main__":
-    with open("superpixels_full_Lenna512.json", "r", encoding="utf-8") as f:
+    with open("superpixels_full_picasso.json", "r", encoding="utf-8") as f:
         data = json.load(f)
 
     OFFSET_DISTANCE = 4.0   # ← можно попробовать 14.0 или 16.0 для ещё более широких мазков

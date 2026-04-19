@@ -110,7 +110,7 @@ def save_superpixels_to_json(labels, centers, imgcol, filename='superpixels_data
     return superpixels_data
 
 def main():
-    filename = 'Lenna512.png'
+    filename = 'picasso.jpg'
 
     img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
     # Загружаем через OpenCV (uint8 BGR) и конвертируем в RGB
