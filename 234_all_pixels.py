@@ -166,260 +166,135 @@ def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir:
 
 def build_two_lines(vertices: List[Tuple[float, float]],
                     offset_distance: float = 2.0) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
-    """Построение двух линий (прямых или сплайнов) и многоугольника сохранения.
-    polygon точно между кривыми. Алгоритм line2 — оригинальный из вашего файла."""
+    """
+    Строит мазок на основе главной оси (PCA) суперпикселя.
+    Возвращает две кривые (line1 – внутренняя, line2 – внешняя) и многоугольник между ними.
+    Мазок имеет форму прямоугольника с закруглёнными концами (капсулы).
+
+    Параметры:
+        vertices: список точек границы суперпикселя
+        offset_distance: не используется (оставлен для совместимости), ширина определяется разбросом точек.
+    """
     if DEBUG:
         print("\n" + "=" * 60)
-        print("ПОСТРОЕНИЕ ЛИНИЙ (ПРЯМЫЕ ИЛИ СПЛАЙНЫ)")
+        print("ПОСТРОЕНИЕ ЛИНИЙ НА ОСНОВЕ PCA (ПРЯМОУГОЛЬНИК С ЗАКРУГЛЕНИЯМИ)")
         print("=" * 60)
 
-    if len(vertices) < 4:
+    if len(vertices) < 3:
+        # Вырожденный случай – просто толстая линия вдоль направления
         if DEBUG:
-            print("Слишком мало вершин → создаём толстую полосу по главной оси")
+            print("Слишком мало вершин → создаём прямую полосу по главной оси")
         main_dir = get_principal_direction(vertices)
         center = np.mean(vertices, axis=0)
-        perp = np.array([-main_dir[1], main_dir[0]])  # перпендикуляр
-        offset = offset_distance * 2.0   # используем параметр функции, а не глобальную переменную
-        p1 = center + offset * perp
-        p2 = center - offset * perp
+        perp = np.array([-main_dir[1], main_dir[0]])
+        half_width = offset_distance * 1.5
+        p1 = center + half_width * perp
+        p2 = center - half_width * perp
         line1 = np.array([p1, p2])
-        line2 = np.array([p1 + main_dir * 10, p2 + main_dir * 10])  # немного удлиняем
-        poly = [tuple(p) for p in [p1, p2, p2 + main_dir * 10, p1 + main_dir * 10]]
+        line2 = np.array([p1 + main_dir * 10, p2 + main_dir * 10])
+        poly = [tuple(p) for p in [p1, p2, p2 + main_dir * 10, p1 + main_dir * 10, p1]]
         return line1, line2, poly
 
-    e1_idx, e2_idx = find_most_parallel_edges(vertices)
-    if e1_idx is None or e2_idx is None:
-        if DEBUG:
-            print("Не удалось найти параллельные рёбра")
-        dummy = np.array([vertices[0], vertices[1]])
-        return dummy, dummy, [vertices[0], vertices[0]]
+    pts = np.array(vertices)
+    center = np.mean(pts, axis=0)
 
-    n = len(vertices)
+    # 1. Вычисляем главную ось (PCA) через SVD
+    main_dir = get_principal_direction(vertices)  # единичный вектор
+    perp = np.array([-main_dir[1], main_dir[0]])  # перпендикуляр
 
-    def edge_len(start_idx: int) -> float:
-        p1 = np.array(vertices[start_idx])
-        p2 = np.array(vertices[(start_idx + 1) % n])
-        return np.linalg.norm(p2 - p1)
+    # 2. Находим проекции всех точек на главную ось и перпендикуляр
+    proj_main = np.dot(pts - center, main_dir)
+    proj_perp = np.dot(pts - center, perp)
 
-    len_e1 = edge_len(e1_idx)
-    len_e2 = edge_len(e2_idx)
-    if len_e1 <= len_e2:
-        small_idx, large_idx = e1_idx, e2_idx
-        small_len = len_e1
-    else:
-        small_idx, large_idx = e2_idx, e1_idx
-        small_len = len_e2
+    t_min, t_max = np.min(proj_main), np.max(proj_main)
+    w_min, w_max = np.min(proj_perp), np.max(proj_perp)
 
-    if DEBUG:
-        print(f"Меньшее ребро: индекс {small_idx} (длина {small_len:.2f})")
-        print(f"Большое ребро: индекс {large_idx} (длина {len_e2 if small_idx == e1_idx else len_e1:.2f})")
+    # 3. Определяем ширину мазка – можно взять размах по перпендикуляру,
+    #    либо фиксированную (например, 2 * offset_distance).
+    #    Здесь используем размах, чтобы мазок покрывал область суперпикселя.
+    width = (w_max - w_min)
+    if width < 1.0:
+        width = offset_distance * 1.5
+    half_width = width / 2.0
 
-    def get_cw_path_info(from_idx: int, to_idx: int):
-        path = []
-        i = from_idx
-        while True:
-            path.append(i)
-            if i == to_idx:
-                break
-            i = (i + 1) % n
-        intermediates = max(0, len(path) - 2)
-        return path, intermediates
+    # 4. Строим центральную линию (отрезок от t_min до t_max)
+    p_start = center + t_min * main_dir
+    p_end = center + t_max * main_dir
 
-    e1_end = (e1_idx + 1) % n
-    e2_end = (e2_idx + 1) % n
+    # 5. Формируем две основные линии (inner и outer) – на самом деле они симметричны
+    inner_line = np.array([p_start + half_width * perp,
+                           p_end + half_width * perp])
+    outer_line = np.array([p_start - half_width * perp,
+                           p_end - half_width * perp])
 
-    _, num_int1 = get_cw_path_info(e1_end, e2_idx)
-    _, num_int2 = get_cw_path_info(e2_end, e1_idx)
+    # 6. Добавляем закруглённые концы (полуокружности)
+    num_arc = 30  # количество точек на дуге
+    # Дуга в начале (p_start)
+    angles1 = np.linspace(np.pi / 2, 3 * np.pi / 2, num_arc)  # от +perp до -perp через main_dir?
+    # Уточним: хотим дугу, соединяющую inner_line[0] и outer_line[0]
+    # inner_line[0] = p_start + half_width*perp
+    # outer_line[0] = p_start - half_width*perp
+    # Параметрическое уравнение окружности: p_start + half_width*(cosθ * perp + sinθ * main_dir)
+    # Чтобы дуга шла от inner к outer против часовой стрелки:
+    # inner соответствует θ = π/2 (perp), outer соответствует θ = -π/2 (-perp)
+    # Пройдём от π/2 до 3π/2 через π (направление -main_dir)
+    theta_start = np.linspace(np.pi / 2, 3 * np.pi / 2, num_arc)
+    arc_start = p_start + half_width * (np.cos(theta_start)[:, None] * perp +
+                                        np.sin(theta_start)[:, None] * main_dir)
 
-    if DEBUG:
-        print(f"Дуга 1 (от {e1_end} до {e2_idx}): {num_int1} промежуточных вершин")
-        print(f"Дуга 2 (от {e2_end} до {e1_idx}): {num_int2} промежуточных вершин")
+    # Дуга в конце (p_end): соединяет outer_line[1] и inner_line[1]
+    # outer_line[1] = p_end - half_width*perp (θ = -π/2 = 3π/2)
+    # inner_line[1] = p_end + half_width*perp (θ = π/2)
+    # Пройдём от 3π/2 до 5π/2 (или от -π/2 до π/2)
+    theta_end = np.linspace(-np.pi / 2, np.pi / 2, num_arc)
+    arc_end = p_end + half_width * (np.cos(theta_end)[:, None] * perp +
+                                    np.sin(theta_end)[:, None] * main_dir)
 
-    if num_int1 >= num_int2:
-        longer_from_idx, longer_to_idx = e1_end, e2_idx
-    else:
-        longer_from_idx, longer_to_idx = e2_end, e1_idx
+    # 7. Формируем непрерывные кривые line1 и line2
+    # line1 (внутренняя) – пойдёт по верхней дуге, затем по inner_line, затем по нижней дуге?
+    # Для заливки нам нужны две замкнутые или отдельные кривые.
+    # Удобно определить line1 как одну непрерывную ломаную:
+    # arc_start (от inner до outer) + outer_line (от p_start до p_end) + arc_end (от outer до inner) + inner_line[::-1]
+    # Но в оригинале line1 и line2 – это две отдельные линии, и polygon строится как объединение.
+    # Мы сохраним логику: line1_curve = верхняя половина капсулы, line2_curve = нижняя.
+    # Визуально:
+    # line1: inner_line[0] -> inner_line[1] (прямая) + дуга в конце (верхняя половина) + дуга в начале (верхняя половина)?
+    # Проще сделать:
+    # line1_curve = arc_start_upper + inner_line + arc_end_upper_reversed?
+    # Предлагаю:
+    # line1: начинается в inner_line[0], идёт по inner_line до inner_line[1],
+    #        затем по верхней половине дуги конца (от inner_line[1] к outer_line[1]),
+    #        затем по outer_line обратно к началу,
+    #        затем по верхней половине дуги начала обратно к inner_line[0].
+    # Это даст замкнутую фигуру. Но нам нужно именно две отдельные кривые для отрисовки.
 
-    if DEBUG:
-        print(f"Выбрана длинная дуга: от вершины {longer_from_idx} до {longer_to_idx}")
+    # Вместо усложнения сделаем просто:
+    # line1_curve – объединение: [arc_start (вся), inner_line, arc_end (вся)]
+    # line2_curve – то же самое, но с outer_line? Тогда они будут пересекаться.
+    # Лучше определить polygon напрямую, а line1/line2 оставить для отображения как две половинки.
+    # Для визуализации можно отдать:
+    line1_curve = np.vstack([arc_start, inner_line, arc_end])
+    line2_curve = np.vstack([arc_start[::-1], outer_line, arc_end[::-1]])
 
-    path_indices, _ = get_cw_path_info(longer_from_idx, longer_to_idx)
-    path_vertices = [vertices[i] for i in path_indices]
-
-    small_endpoints = {small_idx, (small_idx + 1) % n}
-    if longer_from_idx in small_endpoints:
-        chosen_small_idx = longer_from_idx
-        chosen_large_idx = longer_to_idx
-    elif longer_to_idx in small_endpoints:
-        chosen_small_idx = longer_to_idx
-        chosen_large_idx = longer_from_idx
-    else:
-        chosen_small_idx = small_idx
-        chosen_large_idx = large_idx
-
-    small_attach1 = np.array(vertices[chosen_small_idx])
-    large_attach1 = np.array(vertices[chosen_large_idx])
-
-    d = max(small_len - 1.0, 0.5)
-
-    small_start = np.array(vertices[small_idx])
-    small_end = np.array(vertices[(small_idx + 1) % n])
-    small_len = np.linalg.norm(small_end - small_start)
-
-    # ----- ИСПРАВЛЕНИЕ: отсчёт от chosen_small_idx к другому концу ребра -----
-    if chosen_small_idx == small_idx:
-        start_vertex = small_start
-        end_vertex = small_end
-    else:  # chosen_small_idx == (small_idx + 1) % n
-        start_vertex = small_end
-        end_vertex = small_start
-
-    small_edge_dir = end_vertex - start_vertex
-    small_edge_len = np.linalg.norm(small_edge_dir)
-
-    if small_len > 1.0:
-        t_small_attach = (small_len) / small_len
-        small_attach2 = start_vertex + t_small_attach * small_edge_dir
-        small_attach2 = np.round(small_attach2).astype(int)
-    else:
-        small_mid = (small_start + small_end) / 2.0
-        small_attach2 = small_mid
-    # -------------------------------------------------------------------------
-
-    large_p = np.array(vertices[large_idx])
-    large_vec = np.array(vertices[(large_idx + 1) % n]) - large_p
-
-    dir_vec = large_attach1 - small_attach1
-    line_len = np.linalg.norm(dir_vec)
-    if line_len < 1e-6:
-        dummy = np.array([small_attach1, large_attach1])
-        return dummy, dummy, [tuple(small_attach1), tuple(large_attach1), tuple(small_attach2)]
-
-    # Ищем пересечение прямой от small_attach2 с большим ребром (и его продолжением)
-    inter_pos, s_pos = line_intersection(small_attach2, dir_vec, large_p, large_vec)
-    inter_neg, s_neg = line_intersection(small_attach2, -dir_vec, large_p, large_vec)
-
-    candidates = []
-    if inter_pos is not None and s_pos is not None and 0.0 <= s_pos <= 1.0:
-        candidates.append((inter_pos, s_pos, 1.0))
-    if inter_neg is not None and s_neg is not None and 0.0 <= s_neg <= 1.0:
-        candidates.append((inter_neg, s_neg, -1.0))
-
-    if candidates:
-        inter_large, _, _ = candidates[0]
-    else:
-        if inter_pos is not None:
-            inter_large = inter_pos
-        else:
-            inter_large = small_attach2
-
-    large_attach2 = inter_large
-
-    # ---------- ПОСТРОЕНИЕ ПЕРВОЙ КРИВОЙ (line1) ----------
-    path_array = np.array(path_vertices)
-    # Вычисляем характерный размер суперпикселя для epsilon
-    # Можно взять среднее расстояние между соседними вершинами или step
-    if len(path_vertices) >= 3:
-        # Грубая оценка размера суперпикселя
-        bbox_size = max(np.ptp(path_array[:, 0]), np.ptp(path_array[:, 1]))
-        epsilon = bbox_size * 0.15  # 15% от размера — сильно упрощает
-        simplified = rdp(path_array, epsilon=epsilon)
-        if len(simplified) < 2:
-            simplified = np.array([path_vertices[0], path_vertices[-1]])
-        path_array = simplified
-        print(f"Упрощение пути: {len(path_vertices)} → {len(path_array)} точек, epsilon={epsilon:.2f}")
-    use_spline = (len(path_array) >= 3)
-    if use_spline:
-        k = min(3, len(path_array) - 1)  # степень сплайна
-        # s – сглаживание; чем больше, тем плавнее кривая (меньше изгибов)
-        smoothing = len(path_array) * 1.0
-        tck, u = splprep(path_array.T, s=smoothing, k=k)
-        u_new = np.linspace(0, 1, 200)
-        line1_curve = np.column_stack(splev(u_new, tck))
-    else:
-        line1_curve = np.array([small_attach1, large_attach1])
-
-    # ---------- ОРИГИНАЛЬНЫЙ АЛГОРИТМ ПОСТРОЕНИЯ ВТОРОЙ КРИВОЙ (line2) ----------
-    small_edge_dir_norm = small_edge_dir / small_edge_len
-    large_edge_dir_norm = large_vec / np.linalg.norm(large_vec)
-
-    vec_small = small_attach2 - small_start
-    t_small = np.dot(vec_small, small_edge_dir_norm) / small_edge_len
-    t_small = np.clip(t_small, 0.0, 1.0)
-    P_start = small_start + t_small * small_edge_dir
-
-    vec_large = large_attach2 - large_p
-    large_edge_len = np.linalg.norm(large_vec)
-    t_large = np.dot(vec_large, large_edge_dir_norm) / large_edge_len
-    t_large = np.clip(t_large, 0.0, 1.0)
-    P_end = large_p + t_large * large_vec
-
-    # 2. Строим line2 с помощью гомотетии
-    inter_edges, _ = line_intersection(small_start, small_edge_dir, large_p, large_vec)
-
-    if inter_edges is not None:
-        def dist_from_center(pt):
-            return np.linalg.norm(pt - inter_edges)
-
-        if dist_from_center(small_attach1) > 1e-6 and dist_from_center(large_attach1) > 1e-6:
-            scale_start = dist_from_center(P_start) / dist_from_center(small_attach1)
-            scale_end = dist_from_center(P_end) / dist_from_center(large_attach1)
-        else:
-            scale_start = scale_end = 1.0
-    else:
-        scale_start = scale_end = 1.0
-
-    if use_spline:
-        num_samples = 100
-        t_samples = np.linspace(0, 1, num_samples)
-        points_line1 = np.column_stack(splev(t_samples, tck))
-
-        line2_points = []
-        for i, t in enumerate(t_samples):
-            p1 = points_line1[i]
-            if inter_edges is not None:
-                scale = scale_start * (1 - t) + scale_end * t
-                p2 = inter_edges + scale * (p1 - inter_edges)
-            else:
-                delta_start = P_start - small_attach1
-                delta_end = P_end - large_attach1
-                delta = delta_start * (1 - t) + delta_end * t
-                p2 = p1 + delta
-            line2_points.append(p2)
-        line2_curve = np.array(line2_points)
-    else:
-        line2_curve = np.array([P_start, P_end])
-
-    # ---------- МНОГОУГОЛЬНИК ТОЧНО МЕЖДУ КРИВЫМИ ----------
-    if use_spline:
-        keep_curve = np.vstack((line1_curve, line2_curve[::-1]))
-        keep_curve = np.vstack((keep_curve, keep_curve[0]))
-        polygon = [tuple(p) for p in keep_curve]
-
-        if DEBUG:
-            print(f"\nМНОГОУГОЛЬНИК (сплайн, {len(polygon)} точек) — ТОЧНО МЕЖДУ КРИВЫМИ")
-    else:
-        poly_cand1 = [small_attach1, large_attach1, P_end, P_start]
-        poly_cand2 = [small_attach1, P_start, P_end, large_attach1]
-
-        mid_strip = (small_attach1 + large_attach1 + P_start + P_end) / 4.0
-
-        chosen_polygon_list = poly_cand1
-        for cand in [poly_cand1, poly_cand2]:
-            poly_closed = cand + [cand[0]] if not np.allclose(np.asarray(cand[0]), np.asarray(cand[-1]), atol=1e-6) else cand
-            if point_in_polygon(tuple(mid_strip), poly_closed):
-                chosen_polygon_list = cand
-                break
-
-        polygon = [tuple(p) for p in chosen_polygon_list]
-        if not np.allclose(np.asarray(polygon[0]), np.asarray(polygon[-1]), atol=1e-6):
-            polygon.append(polygon[0])
+    # Формируем многоугольник для заливки – полная капсула
+    polygon_points = np.vstack([
+        arc_start,  # дуга начала (от inner к outer)
+        outer_line,  # внешняя прямая
+        arc_end,  # дуга конца (от outer к inner)
+        inner_line[::-1]  # внутренняя прямая в обратном порядке
+    ])
+    polygon = [tuple(p) for p in polygon_points]
+    polygon.append(polygon[0])  # замкнуть
 
     if DEBUG:
-        print(f"ВНУТРЕННЯЯ КРИВАЯ (line1) содержит {len(line1_curve)} точек.")
-        print(f"ВНЕШНЯЯ КРИВАЯ (line2) содержит {len(line2_curve)} точек.")
+        print(f"Главная ось: {main_dir}, ширина: {width:.2f}")
+        print(f"Длина мазка: {np.linalg.norm(p_end - p_start):.2f}")
+        print(f"Кривая 1 (inner+arcs): {len(line1_curve)} точек")
+        print(f"Кривая 2 (outer+arcs): {len(line2_curve)} точек")
+        print(f"Многоугольник: {len(polygon)} точек")
 
     return line1_curve, line2_curve, polygon
+
 # ВЕРНУТЫЕ ОРИГИНАЛЬНЫЕ ФУНКЦИИ ОТРИСОВКИ (точно как в вашем первом файле)
 # ------------------------------------------------------------
 def visualize_result_with_lines(original_sp: Dict[str, Any],
@@ -902,7 +777,7 @@ def fill_gaps_global(updated_data: Dict[str, Any], original_data: Dict[str, Any]
             if new_b:
                 sp["boundary_points"] = [{"x": float(p[0]), "y": float(p[1])} for p in new_b]
 if __name__ == "__main__":
-    with open("superpixels_full_4.json", "r", encoding="utf-8") as f:
+    with open("superpixels_full_Lenna512.json", "r", encoding="utf-8") as f:
         data = json.load(f)
 
     OFFSET_DISTANCE = 4.0   # ← можно попробовать 14.0 или 16.0 для ещё более широких мазков
