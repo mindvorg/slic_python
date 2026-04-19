@@ -47,121 +47,58 @@ def find_superpixel_neighbors(labels):
 
     return neighbors
 
-def save_superpixels_to_json(labels, centers, filename='superpixels_data.json'):
+def save_superpixels_to_json(labels, centers, imgcol, filename='superpixels_data.json'):
     """
-    Сохраняет данные о суперпикселях в JSON файл
-
-    Parameters:
-    labels - матрица меток суперпикселей
-    centers - центры суперпикселей
-    filename - имя файла для сохранения
+    Сохраняет данные о суперпикселях в JSON, включая усреднённый RGB.
     """
-
     height, width = labels.shape
     superpixels_data = {
-        'image_dimensions': {
-            'height': int(height),
-            'width': int(width)
-        },
+        'image_dimensions': {'height': height, 'width': width},
         'num_superpixels': len(centers),
         'superpixels': []
     }
     neighbors = find_superpixel_neighbors(labels)
 
-    # Для каждого суперпикселя собираем координаты граничных точек
     for k in range(len(centers)):
         mask = labels == k
         if not np.any(mask):
             continue
 
-        # Находим граничные точки суперпикселя
-        boundaries = np.zeros((height, width), dtype=np.uint8)
+        # ----- Средний RGB прямо из исходного изображения -----
+        avg_rgb = np.mean(imgcol[mask], axis=0).astype(int)
+        rgb_color = avg_rgb.tolist()  # [R, G, B]
 
-        # Проверяем границы по вертикали
+        # Граничные точки
+        boundaries = np.zeros((height, width), dtype=np.uint8)
         vertical_boundaries = labels[:-1, :] != labels[1:, :]
         boundaries[:-1, :] = np.logical_or(boundaries[:-1, :], vertical_boundaries)
         boundaries[1:, :] = np.logical_or(boundaries[1:, :], vertical_boundaries)
-
-        # Проверяем границы по горизонтали
         horizontal_boundaries = labels[:, :-1] != labels[:, 1:]
         boundaries[:, :-1] = np.logical_or(boundaries[:, :-1], horizontal_boundaries)
         boundaries[:, 1:] = np.logical_or(boundaries[:, 1:], horizontal_boundaries)
 
-        # Получаем координаты граничных точек для этого суперпикселя
         boundary_mask = np.logical_and(boundaries, mask)
         boundary_y, boundary_x = np.where(boundary_mask)
-
-        # Получаем все точки суперпикселя (опционально)
         all_y, all_x = np.where(mask)
 
-        # Преобразуем координаты в стандартные Python типы
         boundary_points = [{'x': int(x), 'y': int(y)} for y, x in zip(boundary_y, boundary_x)]
         all_points = [{'x': int(x), 'y': int(y)} for y, x in zip(all_y, all_x)]
 
-        # Собираем данные суперпикселя
         superpixel_data = {
             'id': int(k),
             'center': {
                 'y': float(centers[k, 0]),
                 'x': float(centers[k, 1])
+            },
+            'color_rgb': {
+                'R': int(rgb_color[0]),
+                'G': int(rgb_color[1]),
+                'B': int(rgb_color[2])
             },
             'boundary_points': boundary_points,
             'all_points': all_points,
             'area': int(len(all_y)),
-            'neighbors': sorted(list(neighbors[k]))  # ДОБАВЬ ЭТУ СТРОКУ
-        }
-
-        superpixels_data['superpixels'].append(superpixel_data)
-
-    # Сохраняем в JSON файл с использованием кастомного обработчика
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(superpixels_data, f, indent=2, ensure_ascii=False, default=numpy_to_python)
-
-    print(f"Данные суперпикселей сохранены в {filename}")
-    return superpixels_data
-
-
-def save_superpixels_compact(labels, centers, filename='superpixels_compact.json'):
-    """
-    Сохраняет компактные данные о суперпикселях (только граничные точки)
-    """
-
-    height, width = labels.shape
-    superpixels_data = {
-        'image_dimensions': {
-            'height': int(height),
-            'width': int(width)
-        },
-        'num_superpixels': int(len(centers)),
-        'superpixels': []
-    }
-
-    for k in range(len(centers)):
-        mask = labels == k
-        if not np.any(mask):
-            continue
-
-        # Находим граничные точки (упрощенный метод)
-        from scipy import ndimage
-
-        # Вычисляем границы с помощью морфологических операций
-        structure = ndimage.generate_binary_structure(2, 2)
-        eroded = ndimage.binary_erosion(mask, structure)
-        boundaries = mask & ~eroded
-
-        boundary_y, boundary_x = np.where(boundaries)
-
-        # Преобразуем координаты в стандартные Python типы
-        boundary_points = [{'x': int(x), 'y': int(y)} for y, x in zip(boundary_y, boundary_x)]
-
-        superpixel_data = {
-            'id': int(k),
-            'center': {
-                'y': float(centers[k, 0]),
-                'x': float(centers[k, 1])
-            },
-            'boundary_points': boundary_points,
-            'area': int(np.sum(mask))
+            'neighbors': sorted(list(neighbors[k]))
         }
 
         superpixels_data['superpixels'].append(superpixel_data)
@@ -169,15 +106,18 @@ def save_superpixels_compact(labels, centers, filename='superpixels_compact.json
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(superpixels_data, f, indent=2, ensure_ascii=False, default=numpy_to_python)
 
-    print(f"Компактные данные суперпикселей сохранены в {filename}")
+    print(f"Данные суперпикселей (средний RGB) сохранены в {filename}")
     return superpixels_data
-
 
 def main():
-    filename = '4.jpg'
+    filename = 'Lenna512.png'
 
     img = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
-    imgcol = plt.imread(filename)
+    # Загружаем через OpenCV (uint8 BGR) и конвертируем в RGB
+    img_bgr = cv2.imread(filename, cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        raise FileNotFoundError(f"Не удалось загрузить изображение {filename}")
+    imgcol = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
     #differentiation kernels
     kernely = np.array([[1,2,1],[0,0,0],[-1,-2,-1]])
@@ -318,9 +258,7 @@ def main():
     print("Сохранение данных суперпикселей...")
 
     # Полная версия с всеми точками
-    full_data = save_superpixels_to_json(labels, centers, f'superpixels_full_{filename.split(".")[0]}.json')
-
-    # Компактная версия только с граничными точками
+    full_data = save_superpixels_to_json(labels, centers, imgcol, f'superpixels_full_{filename.split(".")[0]}.json')
     # compact_data = save_superpixels_compact(labels, centers, f'superpixels_compact_{filename.split(".")[0]}.json')
 
     print(f"Сохранено {len(full_data['superpixels'])} суперпикселей")
