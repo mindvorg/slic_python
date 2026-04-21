@@ -7,7 +7,6 @@ from rdp import rdp
 from typing import List, Tuple, Dict, Any
 from scipy.interpolate import splprep, splev   # <-- добавлен импорт
 from scipy.spatial import ConvexHull, KDTree
-
 DEBUG = True  # Включить вывод отладочной информации
 
 
@@ -165,31 +164,44 @@ def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir:
 
 
 def build_two_lines(
-        vertices: List[Tuple[float, float]],
-        offset_distance: float = 2.0,
-        cap_style: str = 'round',  # 'round', 'flat', 'sharp'
-        roundness: float = 1.0  # при cap_style='round': 0 = плоские, 1 = полный полукруг, >1 – вытянутые
+    vertices: List[Tuple[float, float]],
+    offset_distance: float = 2.0,
+    cap_style: str = 'round',      # 'round', 'flat', 'sharp'
+    roundness: float = 1.0,        # для 'round' – доля полукруга
+    curvature: float = 0.5,        # 0 = прямая, 1 = максимальный изгиб
+    num_sections: int = 20         # число сечений для построения центральной кривой
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
     """
-    Строит мазок на основе главной оси (PCA) суперпикселя.
-
-    Параметры:
-        vertices: список точек границы суперпикселя
-        offset_distance: минимальная ширина (если автоширина даёт <1.0)
-        cap_style: 'flat' – прямоугольник,
-                   'round' – закруглённые концы (капсула),
-                   'sharp' – острые концы (треугольные завершения)
-        roundness: для 'round' – доля полукруга (0=плоский, 1=полуокружность)
+    Строит мазок на основе главной оси (PCA) суперпикселя с возможностью изгиба.
+    Центральная кривая строится по центрам сечений, перпендикулярных главной оси.
     """
-    if DEBUG:
-        print("\n" + "=" * 60)
-        print(f"ПОСТРОЕНИЕ ЛИНИЙ НА ОСНОВЕ PCA (cap_style={cap_style}, roundness={roundness})")
-        print("=" * 60)
 
-    # Вырожденный случай
+    def intersect_segment_polygon(p1, p2, poly_verts):
+        """Возвращает точки пересечения отрезка p1-p2 с полигоном (список)."""
+        def segment_intersection(a1, a2, b1, b2):
+            r = a2 - a1
+            s = b2 - b1
+            denom = np.cross(r, s)
+            if abs(denom) < 1e-10:
+                return None
+            t = np.cross(b1 - a1, s) / denom
+            u = np.cross(b1 - a1, r) / denom
+            if 0 <= t <= 1 and 0 <= u <= 1:
+                return a1 + t * r
+            return None
+
+        intersections = []
+        n = len(poly_verts)
+        for i in range(n):
+            q1 = np.asarray(poly_verts[i])
+            q2 = np.asarray(poly_verts[(i+1)%n])
+            inter = segment_intersection(p1, p2, q1, q2)
+            if inter is not None:
+                intersections.append(inter)
+        return intersections
+
     if len(vertices) < 3:
-        if DEBUG:
-            print("Слишком мало вершин → создаём прямую полосу по главной оси")
+        # Вырожденный случай
         main_dir = get_principal_direction(vertices)
         center = np.mean(vertices, axis=0)
         perp = np.array([-main_dir[1], main_dir[0]])
@@ -204,102 +216,117 @@ def build_two_lines(
     pts = np.array(vertices)
     center = np.mean(pts, axis=0)
 
-    # Главная ось (PCA)
+    # 1. Главная ось (PCA)
     main_dir = get_principal_direction(vertices)
     perp = np.array([-main_dir[1], main_dir[0]])
 
     # Проекции точек
     proj_main = np.dot(pts - center, main_dir)
-    proj_perp = np.dot(pts - center, perp)
-
     t_min, t_max = np.min(proj_main), np.max(proj_main)
-    w_min, w_max = np.min(proj_perp), np.max(proj_perp)
 
-    # Ширина (авто или fallback)
-    width = (w_max - w_min)
+    proj_perp = np.dot(pts - center, perp)
+    w_min, w_max = np.min(proj_perp), np.max(proj_perp)
+    width = w_max - w_min
     if width < 1.0:
         width = offset_distance * 1.5
     half_width = width / 2.0
 
-    # Центральная линия
-    p_start = center + t_min * main_dir
-    p_end = center + t_max * main_dir
+    # 2. Построение центральной кривой
+    if curvature <= 0.0 or (t_max - t_min) < 1.0:
+        center_curve = np.array([center + t_min * main_dir, center + t_max * main_dir])
+    else:
+        effective_sections = max(5, int(num_sections * curvature))
+        t_vals = np.linspace(t_min, t_max, effective_sections)
+        center_points = []
 
-    # Базовые прямые (внутренняя и внешняя стороны)
-    inner_line = np.array([p_start + half_width * perp,
-                           p_end + half_width * perp])
-    outer_line = np.array([p_start - half_width * perp,
-                           p_end - half_width * perp])
+        for t in t_vals:
+            base_pt = center + t * main_dir
+            perp_length = max(width * 2, (t_max - t_min) * 0.5)
+            p1 = base_pt - perp_length * perp
+            p2 = base_pt + perp_length * perp
 
-    # Обработка стиля окончаний
-    if cap_style == 'flat':
-        # Прямоугольник без закруглений
-        line1_curve = inner_line
-        line2_curve = outer_line
-        polygon_points = np.vstack([inner_line, outer_line[::-1]])
+            inters = intersect_segment_polygon(p1, p2, vertices)
+            if len(inters) >= 2:
+                proj = [np.dot(p - base_pt, perp) for p in inters]
+                idx_min = np.argmin(proj)
+                idx_max = np.argmax(proj)
+                center_sec = (inters[idx_min] + inters[idx_max]) / 2.0
+                center_points.append(center_sec)
+            elif len(inters) == 1:
+                center_points.append(inters[0])
+            else:
+                center_points.append(base_pt)
 
-    elif cap_style == 'sharp':
-        # Острые концы: сходятся в точках на оси
-        tip_start = p_start - half_width * main_dir  # можно и просто p_start
-        tip_end = p_end + half_width * main_dir
+        center_points = np.array(center_points)
 
-        line1_curve = np.vstack([tip_start, inner_line, tip_end])
-        line2_curve = np.vstack([tip_start, outer_line, tip_end])
-
-        polygon_points = np.vstack([
-            tip_start,
-            inner_line,
-            tip_end,
-            outer_line[::-1]
-        ])
-
-    else:  # 'round' (по умолчанию)
-        # Радиус закругления (может быть меньше половины ширины)
-        arc_radius = half_width * roundness
-
-        # Дуга в начале
-        theta_start = np.linspace(np.pi / 2, 3 * np.pi / 2, max(10, int(20 * roundness)))
-        arc_start = p_start + arc_radius * (np.cos(theta_start)[:, None] * perp +
-                                            np.sin(theta_start)[:, None] * main_dir)
-
-        # Дуга в конце
-        theta_end = np.linspace(-np.pi / 2, np.pi / 2, max(10, int(20 * roundness)))
-        arc_end = p_end + arc_radius * (np.cos(theta_end)[:, None] * perp +
-                                        np.sin(theta_end)[:, None] * main_dir)
-
-        # Если roundness < 1.0, остаются прямые участки между дугами и линиями
-        if roundness < 1.0:
-            # Укороченные прямые
-            inner_straight = np.array([p_start + half_width * perp,
-                                       p_end + half_width * perp])
-            outer_straight = np.array([p_start - half_width * perp,
-                                       p_end - half_width * perp])
+        if len(center_points) >= 3:
+            try:
+                s_smooth = len(center_points) * (1.0 - curvature) * 2.0 + 0.1
+                k = min(3, len(center_points) - 1)
+                tck, u = splprep(center_points.T, s=s_smooth, k=k)
+                u_new = np.linspace(0, 1, 100)
+                center_curve = np.column_stack(splev(u_new, tck))
+            except Exception:
+                center_curve = center_points
         else:
-            inner_straight = inner_line
-            outer_straight = outer_line
+            center_curve = center_points
 
-        line1_curve = np.vstack([arc_start, inner_straight, arc_end])
-        line2_curve = np.vstack([arc_start[::-1], outer_straight, arc_end[::-1]])
+    if len(center_curve) < 2:
+        center_curve = np.array([center + t_min * main_dir, center + t_max * main_dir])
 
-        polygon_points = np.vstack([
-            arc_start,
-            outer_straight,
-            arc_end,
-            inner_straight[::-1]
-        ])
+    # 3. Построение line1 и line2 как эквидистант
+    tangents = np.gradient(center_curve, axis=0)
+    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+    tangents = tangents / (norms + 1e-8)
+    normals = np.empty_like(tangents)
+    normals[:, 0] = -tangents[:, 1]
+    normals[:, 1] = tangents[:, 0]
 
-    # Замыкаем полигон
-    polygon = [tuple(p) for p in polygon_points]
+    line1_curve = center_curve + half_width * normals
+    line2_curve = center_curve - half_width * normals
+
+    # 4. Обработка окончаний
+    if cap_style == 'flat':
+        poly_points = np.vstack([line1_curve, line2_curve[::-1]])
+    elif cap_style == 'sharp':
+        tip_start = center_curve[0] - half_width * tangents[0]
+        tip_end   = center_curve[-1] + half_width * tangents[-1]
+        line1_curve = np.vstack([tip_start, line1_curve, tip_end])
+        line2_curve = np.vstack([tip_start, line2_curve, tip_end])
+        poly_points = np.vstack([tip_start, line1_curve, tip_end, line2_curve[::-1]])
+    else:  # 'round'
+        arc_radius = half_width * roundness
+        num_arc = max(10, int(20 * roundness))
+
+        dir_start = tangents[0]
+        dir_end = tangents[-1]
+        perp_start = normals[0]
+        perp_end = normals[-1]
+
+        theta_start = np.linspace(np.pi/2, 3*np.pi/2, num_arc)
+        arc_start = center_curve[0] + arc_radius * (np.cos(theta_start)[:, None] * perp_start +
+                                                    np.sin(theta_start)[:, None] * dir_start)
+        theta_end = np.linspace(-np.pi/2, np.pi/2, num_arc)
+        arc_end = center_curve[-1] + arc_radius * (np.cos(theta_end)[:, None] * perp_end +
+                                                   np.sin(theta_end)[:, None] * dir_end)
+
+        if roundness < 1.0:
+            trim_len = int(len(line1_curve) * (1.0 - roundness) / 2)
+            line1_trimmed = line1_curve[trim_len:-trim_len] if trim_len > 0 else line1_curve
+            line2_trimmed = line2_curve[trim_len:-trim_len] if trim_len > 0 else line2_curve
+        else:
+            line1_trimmed = line1_curve
+            line2_trimmed = line2_curve
+
+        line1_curve = np.vstack([arc_start, line1_trimmed, arc_end])
+        line2_curve = np.vstack([arc_start[::-1], line2_trimmed, arc_end[::-1]])
+
+        poly_points = np.vstack([arc_start, line2_trimmed, arc_end, line1_trimmed[::-1]])
+
+    polygon = [tuple(p) for p in poly_points]
     polygon.append(polygon[0])
 
-    if DEBUG:
-        print(f"Главная ось: {main_dir}, ширина: {width:.2f}")
-        print(f"Длина мазка: {np.linalg.norm(p_end - p_start):.2f}")
-        print(f"line1_curve: {len(line1_curve)} точек, line2_curve: {len(line2_curve)} точек")
-        print(f"Полигон: {len(polygon)} точек")
-
     return line1_curve, line2_curve, polygon
-
 
 def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
     """Итоговый график: все суперпиксели как цветные мазки прямоугольной кисти.
