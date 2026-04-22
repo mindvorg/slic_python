@@ -51,53 +51,53 @@ def edges_from_vertices(vertices: List[Tuple[float, float]]) -> List[Tuple[np.nd
     return edges
 
 
-def find_most_parallel_edges(vertices: List[Tuple[float, float]]) -> Tuple[int, int]:
-    """Выбираем пару рёбер, между которыми МАКСИМАЛЬНОЕ расстояние.
-    Это даёт самую широкую полосу внутри суперпикселя → минимум пробелов."""
-    if len(vertices) < 3:
-        return 0, 1 if len(vertices) >= 2 else (0, 0)
-
-    edges = edges_from_vertices(vertices)
-    n = len(edges)
-    best_pair = None
-    best_width = -1.0
-
-    if DEBUG:
-        print("\n" + "=" * 60)
-        print("ПОИСК ПАРЫ РЁБЕР С МАКСИМАЛЬНОЙ ШИРИНОЙ (чтобы захватить max площади)")
-        print("=" * 60)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if {i, (i+1)%n} & {j, (j+1)%n}:   # соседние рёбра пропускаем
-                continue
-
-            # === ИСПРАВЛЕНИЕ: явно приводим к float ===
-            p1 = np.array(vertices[i], dtype=float)
-            d1 = edges[i][0].astype(float)      # вектор первого ребра
-
-            # Нормаль к первому ребру
-            normal = np.array([-d1[1], d1[0]], dtype=float)
-            norm_len = np.linalg.norm(normal)
-            if norm_len > 1e-10:
-                normal /= norm_len
-
-            # Проекции всех вершин
-            projections = [np.dot(np.array(p, dtype=float) - p1, normal) for p in vertices]
-            width = max(projections) - min(projections)
-
-            if DEBUG:
-                print(f"Рёбра {i}↔{j}: ширина полосы = {width:.2f}")
-
-            if width > best_width:
-                best_width = width
-                best_pair = (i, j)
-
-    if DEBUG and best_pair:
-        print(f"\nВЫБРАНЫ РЁБРА С МАКСИМАЛЬНОЙ ШИРИНОЙ: {best_pair[0]} и {best_pair[1]} "
-              f"(ширина = {best_width:.2f})")
-
-    return best_pair
+# def find_most_parallel_edges(vertices: List[Tuple[float, float]]) -> Tuple[int, int]:
+#     """Выбираем пару рёбер, между которыми МАКСИМАЛЬНОЕ расстояние.
+#     Это даёт самую широкую полосу внутри суперпикселя → минимум пробелов."""
+#     if len(vertices) < 3:
+#         return 0, 1 if len(vertices) >= 2 else (0, 0)
+#
+#     edges = edges_from_vertices(vertices)
+#     n = len(edges)
+#     best_pair = None
+#     best_width = -1.0
+#
+#     if DEBUG:
+#         print("\n" + "=" * 60)
+#         print("ПОИСК ПАРЫ РЁБЕР С МАКСИМАЛЬНОЙ ШИРИНОЙ (чтобы захватить max площади)")
+#         print("=" * 60)
+#
+#     for i in range(n):
+#         for j in range(i + 1, n):
+#             if {i, (i+1)%n} & {j, (j+1)%n}:   # соседние рёбра пропускаем
+#                 continue
+#
+#             # === ИСПРАВЛЕНИЕ: явно приводим к float ===
+#             p1 = np.array(vertices[i], dtype=float)
+#             d1 = edges[i][0].astype(float)      # вектор первого ребра
+#
+#             # Нормаль к первому ребру
+#             normal = np.array([-d1[1], d1[0]], dtype=float)
+#             norm_len = np.linalg.norm(normal)
+#             if norm_len > 1e-10:
+#                 normal /= norm_len
+#
+#             # Проекции всех вершин
+#             projections = [np.dot(np.array(p, dtype=float) - p1, normal) for p in vertices]
+#             width = max(projections) - min(projections)
+#
+#             if DEBUG:
+#                 print(f"Рёбра {i}↔{j}: ширина полосы = {width:.2f}")
+#
+#             if width > best_width:
+#                 best_width = width
+#                 best_pair = (i, j)
+#
+#     if DEBUG and best_pair:
+#         print(f"\nВЫБРАНЫ РЁБРА С МАКСИМАЛЬНОЙ ШИРИНОЙ: {best_pair[0]} и {best_pair[1]} "
+#               f"(ширина = {best_width:.2f})")
+#
+#     return best_pair
 
 def get_principal_direction(vertices: List[Tuple[float, float]]) -> np.ndarray:
     """Вычисляет главную ось суперпикселя (PCA) с помощью numpy.
@@ -164,37 +164,41 @@ def project_point_onto_line(point: np.ndarray, line_point: np.ndarray, line_dir:
 
 
 def build_two_lines(
-    vertices: List[Tuple[float, float]],
-    offset_distance: float = 2.0,
-    cap_style: str = 'round',      # 'round', 'flat', 'sharp'
-    roundness: float = 1.0,        # для 'round' – доля полукруга
-    curvature: float = 0.5,        # 0 = прямая, 1 = максимальный изгиб
-    num_sections: int = 20         # число сечений для построения центральной кривой
-) -> Tuple[np.ndarray, np.ndarray, List[Tuple[float, float]]]:
+        vertices: List[Tuple[float, float]],
+        offset_distance: float = 2.0,
+        cap_style: str = 'round',  # 'round', 'flat', 'sharp', 'drop'
+        roundness: float = 1.0,
+        curvature: float = 0.5,
+        num_sections: int = 20
+):
     """
-    Строит мазок на основе главной оси (PCA) суперпикселя с возможностью изгиба.
-    Центральная кривая строится по центрам сечений, перпендикулярных главной оси.
+    Строит мазок на основе главной оси (PCA) суперпикселя.
+    cap_style='drop' создаёт каплевидный мазок (сужается к концам)
+    Возвращает: line1, line2, polygon, center_curve
     """
 
     def intersect_segment_polygon(p1, p2, poly_verts):
         """Возвращает точки пересечения отрезка p1-p2 с полигоном (список)."""
+
         def segment_intersection(a1, a2, b1, b2):
             r = a2 - a1
             s = b2 - b1
-            denom = np.cross(r, s)
+            # Добавляем третью координату 0 для совместимости с новым NumPy
+            r3 = np.append(r, 0)
+            s3 = np.append(s, 0)
+            denom = np.cross(r3, s3)[2]  # берём z-компоненту
             if abs(denom) < 1e-10:
                 return None
-            t = np.cross(b1 - a1, s) / denom
-            u = np.cross(b1 - a1, r) / denom
+            t = np.cross(np.append(b1 - a1, 0), s3)[2] / denom
+            u = np.cross(np.append(b1 - a1, 0), r3)[2] / denom
             if 0 <= t <= 1 and 0 <= u <= 1:
                 return a1 + t * r
             return None
-
         intersections = []
         n = len(poly_verts)
         for i in range(n):
             q1 = np.asarray(poly_verts[i])
-            q2 = np.asarray(poly_verts[(i+1)%n])
+            q2 = np.asarray(poly_verts[(i + 1) % n])
             inter = segment_intersection(p1, p2, q1, q2)
             if inter is not None:
                 intersections.append(inter)
@@ -211,7 +215,8 @@ def build_two_lines(
         line1 = np.array([p1, p2])
         line2 = np.array([p1 + main_dir * 10, p2 + main_dir * 10])
         poly = [tuple(p) for p in [p1, p2, p2 + main_dir * 10, p1 + main_dir * 10, p1]]
-        return line1, line2, poly
+        center_curve = np.array([center, center + main_dir * 10])
+        return line1, line2, poly, center_curve
 
     pts = np.array(vertices)
     center = np.mean(pts, axis=0)
@@ -282,38 +287,91 @@ def build_two_lines(
     normals[:, 0] = -tangents[:, 1]
     normals[:, 1] = tangents[:, 0]
 
-    line1_curve = center_curve + half_width * normals
-    line2_curve = center_curve - half_width * normals
+    # 4. Создание каплевидной формы (ширина плавно уменьшается к концам)
+    if cap_style == 'drop':
+        # Параметры формы капли
+        max_width = offset_distance * 1.5  # максимальная ширина в середине
+        taper_start = 0.15  # доля длины, на которой сужается начало (15%)
+        taper_end = 0.15  # доля длины, на которой сужается конец (15%)
 
-    # 4. Обработка окончаний
-    if cap_style == 'flat':
+        # Создаём массив параметров t от 0 до 1
+        n_points = len(center_curve)
+        t_params = np.linspace(0, 1, n_points)
+
+        # Функция ширины: 0 на концах, max_width в середине
+        # Используем синусоидальную форму для плавного сужения
+        width_factor = np.sin(np.pi * t_params)
+        # Можно сделать более острую форму: width_factor = (np.sin(np.pi * t_params)) ** 0.7
+
+        # Применяем сужение к началу и концу
+        for i, t in enumerate(t_params):
+            if t < taper_start:
+                # Начало: плавное расширение от 0
+                local_t = t / taper_start
+                width_factor[i] *= local_t
+            elif t > 1 - taper_end:
+                # Конец: плавное сужение к 0
+                local_t = (1 - t) / taper_end
+                width_factor[i] *= local_t
+
+        # Вычисляем ширину в каждой точке
+        current_width = max_width * width_factor
+
+        # Строим границы с переменной шириной
+        line1_curve = center_curve + current_width[:, np.newaxis] * normals
+        line2_curve = center_curve - current_width[:, np.newaxis] * normals
+
+        # Собираем полигон
+        poly_points = np.vstack([line1_curve, line2_curve[::-1], line1_curve[0:1]])
+
+    elif cap_style == 'flat':
+        line1_curve = center_curve + half_width * normals
+        line2_curve = center_curve - half_width * normals
         poly_points = np.vstack([line1_curve, line2_curve[::-1]])
+
     elif cap_style == 'sharp':
+        half_width = offset_distance
+        line1_curve = center_curve + half_width * normals
+        line2_curve = center_curve - half_width * normals
         tip_start = center_curve[0] - half_width * tangents[0]
-        tip_end   = center_curve[-1] + half_width * tangents[-1]
+        tip_end = center_curve[-1] + half_width * tangents[-1]
         line1_curve = np.vstack([tip_start, line1_curve, tip_end])
         line2_curve = np.vstack([tip_start, line2_curve, tip_end])
         poly_points = np.vstack([tip_start, line1_curve, tip_end, line2_curve[::-1]])
+
     else:  # 'round'
+        # Сначала создаём базовые line1_curve и line2_curve (постоянная ширина)
+        line1_curve = center_curve + half_width * normals
+        line2_curve = center_curve - half_width * normals
+
         arc_radius = half_width * roundness
         num_arc = max(10, int(20 * roundness))
 
-        dir_start = tangents[0]
-        dir_end = tangents[-1]
-        perp_start = normals[0]
-        perp_end = normals[-1]
+        if len(tangents) > 0:
+            dir_start = tangents[0]
+            dir_end = tangents[-1]
+        else:
+            dir_start = np.array([1.0, 0.0])
+            dir_end = np.array([1.0, 0.0])
 
-        theta_start = np.linspace(np.pi/2, 3*np.pi/2, num_arc)
+        perp_start = normals[0] if len(normals) > 0 else np.array([0.0, 1.0])
+        perp_end = normals[-1] if len(normals) > 0 else np.array([0.0, 1.0])
+
+        theta_start = np.linspace(np.pi / 2, 3 * np.pi / 2, num_arc)
         arc_start = center_curve[0] + arc_radius * (np.cos(theta_start)[:, None] * perp_start +
                                                     np.sin(theta_start)[:, None] * dir_start)
-        theta_end = np.linspace(-np.pi/2, np.pi/2, num_arc)
+        theta_end = np.linspace(-np.pi / 2, np.pi / 2, num_arc)
         arc_end = center_curve[-1] + arc_radius * (np.cos(theta_end)[:, None] * perp_end +
                                                    np.sin(theta_end)[:, None] * dir_end)
 
         if roundness < 1.0:
             trim_len = int(len(line1_curve) * (1.0 - roundness) / 2)
-            line1_trimmed = line1_curve[trim_len:-trim_len] if trim_len > 0 else line1_curve
-            line2_trimmed = line2_curve[trim_len:-trim_len] if trim_len > 0 else line2_curve
+            if trim_len > 0 and trim_len < len(line1_curve):
+                line1_trimmed = line1_curve[trim_len:-trim_len]
+                line2_trimmed = line2_curve[trim_len:-trim_len]
+            else:
+                line1_trimmed = line1_curve
+                line2_trimmed = line2_curve
         else:
             line1_trimmed = line1_curve
             line2_trimmed = line2_curve
@@ -326,25 +384,35 @@ def build_two_lines(
     polygon = [tuple(p) for p in poly_points]
     polygon.append(polygon[0])
 
-    return line1_curve, line2_curve, polygon
-
+    return line1_curve, line2_curve, polygon, center_curve
 def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
     """Итоговый график: все суперпиксели как цветные мазки прямоугольной кисти.
     Цвета берутся из поля color_rgb JSON.
+    Мазки рисуются ОТ БОЛЬШЕГО К МЕНЬШЕМУ (по количеству пикселей).
     """
     print("Построение итогового графика со всеми мазками кисти...")
+
+    # === НОВАЯ ЛОГИКА: сортируем по убыванию площади ===
+    # Площадь = количество пикселей в all_points (самый точный и быстрый способ)
+    superpixels_sorted = sorted(
+        data["superpixels"],
+        key=lambda sp: len(sp.get("all_points", [])),
+        reverse=True   # сначала самые большие мазки
+    )
+
+    if DEBUG:
+        print(f"   Отсортировано {len(superpixels_sorted)} суперпикселей "
+              f"(от самого большого к самому маленькому)")
 
     plt.figure(figsize=(16, 16))
     ax = plt.gca()
 
-    for sp in data["superpixels"]:
+    for sp in superpixels_sorted:
         # Получаем цвет суперпикселя из JSON
         rgb = sp.get("color_rgb")
         if rgb is not None and all(k in rgb for k in ("R", "G", "B")):
-            # Нормализуем в диапазон [0, 1] для matplotlib
             color = (rgb["R"] / 255.0, rgb["G"] / 255.0, rgb["B"] / 255.0)
         else:
-            # Fallback – серый цвет, если поле отсутствует
             color = (0.7, 0.7, 0.7)
 
         boundary_points = [(p["x"], p["y"]) for p in sp.get("boundary_points", [])]
@@ -358,15 +426,7 @@ def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
         if len(vertices) < 3:
             continue
 
-        line1, line2, polygon = build_two_lines(vertices, offset_distance)
-        # # Плоские концы
-        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='flat')
-        #
-        # # Острые концы
-        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='sharp')
-        #
-        # # Частичное закругление (сглаженные углы)
-        # line1, line2, poly = build_two_lines(vertices, offset_distance, cap_style='round', roundness=0.4)
+        line1, line2, polygon, _ = build_two_lines(vertices, offset_distance)
 
         # 1. Заполнение мазка (полупрозрачный цвет суперпикселя)
         if len(line1) >= 2 and len(line2) >= 2:
@@ -375,20 +435,9 @@ def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
             ax.fill(keep_curve[:, 0], keep_curve[:, 1],
                     color=color, alpha=1, linewidth=0)
 
-        # 2. Тонкая граница исходного суперпикселя
-        # poly = np.array(vertices + [vertices[0]])
-        # ax.plot(poly[:, 0], poly[:, 1],
-        #         color=color, linewidth=1.0, alpha=0.7, linestyle='-')
-        #
-        # # 3. Inner и Outer кривые (более яркие, но того же цвета)
-        # if len(line1) > 1:
-        #     ax.plot(line1[:, 0], line1[:, 1],
-        #             color=color, linewidth=2.0, alpha=0.9, linestyle='-')
-        # if len(line2) > 1:
-        #     ax.plot(line2[:, 0], line2[:, 1],
-        #             color=color, linewidth=2.0, alpha=0.9, linestyle='--')
-
-    ax.set_title("Итоговая имитация мазков прямоугольной кисти\n(цвета соответствуют исходным суперпикселям)",
+    ax.set_title("Итоговая имитация мазков прямоугольной кисти\n"
+                 "(цвета соответствуют исходным суперпикселям)\n"
+                 "Порядок рисования: от большего мазка → к меньшему",
                  fontsize=16, pad=20)
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
@@ -410,7 +459,6 @@ def visualize_final_splines(data: Dict[str, Any], offset_distance: float = 2.0):
     plt.savefig("final_brush_strokes.png", dpi=400, bbox_inches='tight')
     print("✅ График сохранён как final_brush_strokes.png")
 
-
 # Остальные функции (process_superpixel_with_lines и main) — без изменений
 # ------------------------------------------------------------
 def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
@@ -428,7 +476,7 @@ def process_superpixel_with_lines(superpixel_id: int, data: Dict[str, Any],
         vertices = simplify_boundary(vertices)
 
     # Строим широкую полосу (уровень 1)
-    line1_curve, line2_curve, polygon = build_two_lines(vertices, offset_distance)
+    line1_curve, line2_curve, polygon, _ = build_two_lines(vertices, offset_distance)
 
     # === ОСНОВНАЯ ЛОГИКА ===
     reassigned = {superpixel_id: []}
@@ -526,7 +574,7 @@ def fill_gaps_global(updated_data: Dict[str, Any], original_data: Dict[str, Any]
             if new_b:
                 sp["boundary_points"] = [{"x": float(p[0]), "y": float(p[1])} for p in new_b]
 if __name__ == "__main__":
-    with open("superpixels_full_picasso.json", "r", encoding="utf-8") as f:
+    with open("superpixels_full_Lenna512.json", "r", encoding="utf-8") as f:
         data = json.load(f)
 
     OFFSET_DISTANCE = 4.0   # ← можно попробовать 14.0 или 16.0 для ещё более широких мазков
